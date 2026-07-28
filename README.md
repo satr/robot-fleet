@@ -62,6 +62,8 @@ Run one simulator locally:
 make robot-run ROBOT_ID=robot-local ROBOT_NAME="Local Robot"
 ```
 
+Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`.
+
 `make dev` starts Docker infrastructure and then runs the backend locally in the foreground. Start local robot simulators in separate terminals.
 
 `make db-migrate` starts `postgres-timescaledb` if needed, waits for it to become ready, and then runs SQLx migrations against the local database port.
