@@ -159,6 +159,14 @@ struct CommandResultMessage {
     occurred_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Serialize)]
+struct RobotCommandMessage {
+    command_id: Uuid,
+    robot_id: String,
+    command_type: String,
+    payload: Value,
+}
+
 #[derive(Debug, Deserialize)]
 struct CreateCommandRequest {
     command_type: String,
@@ -343,8 +351,8 @@ async fn create_command(
 
     let command = command_from_row(row);
     let topic = format!("robots/{}/commands", robot_id);
-    let message =
-        serde_json::to_vec(&command).map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    let message = serde_json::to_vec(&RobotCommandMessage::from(&command))
+        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
     state
         .mqtt
         .publish(topic, QoS::AtLeastOnce, false, message)
@@ -667,6 +675,17 @@ fn command_from_row(row: sqlx::postgres::PgRow) -> CommandResponse {
     }
 }
 
+impl From<&CommandResponse> for RobotCommandMessage {
+    fn from(command: &CommandResponse) -> Self {
+        Self {
+            command_id: command.command_id,
+            robot_id: command.robot_id.clone(),
+            command_type: command.command_type.clone(),
+            payload: command.payload.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -714,5 +733,29 @@ mod tests {
             expires_at: None,
         };
         assert_eq!(request.command_type, "dock");
+    }
+
+    #[test]
+    fn robot_command_payload_includes_command_id() {
+        let command_id = Uuid::new_v4();
+        let command = CommandResponse {
+            command_id,
+            robot_id: "robot-01".into(),
+            command_type: "dock".into(),
+            payload: json!({ "station": "A" }),
+            status: "created".into(),
+            created_at: Utc::now(),
+            expires_at: None,
+            acknowledged_at: None,
+            completed_at: None,
+        };
+
+        let payload = serde_json::to_value(RobotCommandMessage::from(&command))
+            .expect("serialize robot command");
+        assert_eq!(payload["command_id"], command_id.to_string());
+        assert_eq!(payload["robot_id"], "robot-01");
+        assert_eq!(payload["command_type"], "dock");
+        assert_eq!(payload["payload"], json!({ "station": "A" }));
+        assert!(payload.get("status").is_none());
     }
 }

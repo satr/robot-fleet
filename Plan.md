@@ -211,13 +211,23 @@ For the first version:
 * robot simulators publish telemetry and state through MQTT;
 * robot simulators subscribe to their command topic;
 * the backend subscribes to robot telemetry and state topics;
-* the backend publishes commands to robot command topics.
+* the backend publishes commands with unique command IDs to robot command topics;
+* each robot persists processed command IDs and ignores duplicates for idempotent command handling.
 
 Use QoS 0 for high-frequency telemetry.
 
 Use QoS 1 for commands, command results and important state events.
 
-Do not claim end-to-end exactly-once delivery. Use unique identifiers and idempotent processing.
+Do not claim end-to-end exactly-once delivery. Use unique command identifiers and idempotent robot-side processing. Persist processed command IDs in each robot state directory so idempotency survives simulator restarts.
+
+Backend command messages sent to `robots/{robot_id}/commands` must include:
+
+```text
+command_id
+robot_id
+command_type
+payload
+```
 
 ## Kafka
 
@@ -308,6 +318,8 @@ Prometheus must scrape:
 
 * backend metrics;
 * simulator metrics where practical.
+
+For local debug runs, Prometheus scrapes host-local processes through `host.docker.internal`: backend on port 8089 and one simulator on port 9100. Docker robot simulators are scraped by service name when those containers are running.
 
 Expose initial metrics such as:
 
@@ -573,12 +585,15 @@ The initial task is complete when:
 4. the backend stores current robot state in PostgreSQL;
 5. historical telemetry is stored in TimescaleDB;
 6. the backend can create a command through REST;
-7. the command is delivered to the correct robot;
-8. the robot acknowledges and completes the command;
-9. command status is visible through the backend API;
-10. Prometheus collects backend metrics;
-11. Grafana displays the initial dashboard;
-12. the README explains how to run and inspect everything.
+7. every command has a unique ID;
+8. the command is delivered to the correct robot;
+9. the robot persists processed command IDs for idempotency;
+10. duplicate command deliveries are ignored by the robot;
+11. the robot acknowledges and completes the command;
+12. command status is visible through the backend API;
+13. Prometheus collects backend and simulator metrics;
+14. Grafana displays the initial dashboard;
+15. the README explains how to run and inspect everything.
 
 Implement this incrementally.
 

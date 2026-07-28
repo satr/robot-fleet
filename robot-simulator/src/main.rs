@@ -306,15 +306,15 @@ async fn handle_command(
         return Ok(());
     }
 
-    {
-        let mut guard = state.lock().await;
-        if !guard.processed_commands.insert(command.command_id) {
-            info!(robot_id = config.robot_id, command_id = %command.command_id, "duplicate command ignored");
-            return Ok(());
-        }
-        persist_processed_command(&config.processed_commands_path, command.command_id).await?;
-        guard.current_mission = Some(command.command_type.clone());
+    let mut guard = state.lock().await;
+    if guard.processed_commands.contains(&command.command_id) {
+        info!(robot_id = config.robot_id, command_id = %command.command_id, "duplicate command ignored");
+        return Ok(());
     }
+    persist_processed_command(&config.processed_commands_path, command.command_id).await?;
+    guard.processed_commands.insert(command.command_id);
+    guard.current_mission = Some(command.command_type.clone());
+    drop(guard);
 
     metrics.commands_processed.inc();
     publish_command_result(
@@ -431,6 +431,7 @@ async fn persist_processed_command(path: &PathBuf, command_id: Uuid) -> anyhow::
         .open(path)
         .await?;
     file.write_all(format!("{command_id}\n").as_bytes()).await?;
+    file.flush().await?;
     Ok(())
 }
 
@@ -457,5 +458,26 @@ mod tests {
 
         assert!(state.processed_commands.insert(command_id));
         assert!(!state.processed_commands.insert(command_id));
+    }
+
+    #[tokio::test]
+    async fn processed_command_ids_are_persisted_and_loaded() {
+        let command_id = Uuid::new_v4();
+        let path = std::env::temp_dir().join(format!(
+            "robot-simulator-processed-commands-{command_id}.txt"
+        ));
+
+        persist_processed_command(&path, command_id)
+            .await
+            .expect("persist command id");
+
+        let processed = load_processed_commands(&path)
+            .await
+            .expect("load processed command ids");
+        assert!(processed.contains(&command_id));
+
+        tokio::fs::remove_file(path)
+            .await
+            .expect("remove processed commands test file");
     }
 }

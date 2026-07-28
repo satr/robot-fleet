@@ -20,7 +20,7 @@ flowchart LR
     Dashboard -->|REST| Backend
 ```
 
-Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST APIs, and publishes commands to robot MQTT command topics. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step.
+Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST APIs, and publishes commands with unique IDs to robot MQTT command topics. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step.
 
 ## Repository structure
 
@@ -64,6 +64,8 @@ make robot-run ROBOT_ID=robot-local ROBOT_NAME="Local Robot"
 
 Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`.
 
+For local simulator runs, processed command IDs are stored in `data/robots/<ROBOT_ID>/processed_commands.txt`. Docker simulators store the same idempotency state under their mounted `/state` volume.
+
 `make dev` starts Docker infrastructure and then runs the backend locally in the foreground. Start local robot simulators in separate terminals.
 
 `make db-migrate` starts `postgres-timescaledb` if needed, waits for it to become ready, and then runs SQLx migrations against the local database port.
@@ -98,6 +100,8 @@ Stateful container data is stored in `data/` on the host:
 - `data/robots/robot-01/`
 - `data/robots/robot-02/`
 - `data/robots/robot-03/`
+
+Each robot directory contains `processed_commands.txt`, which stores command UUIDs the simulator has already handled. This makes command handling idempotent across duplicate MQTT deliveries and simulator restarts.
 
 ## Makefile commands
 
@@ -143,6 +147,8 @@ curl -X POST http://localhost:8089/robots/robot-01/commands \
   -d '{"command_type":"dock","payload":{"station":"A"}}'
 ```
 
+The backend assigns every command a unique `command_id`. Robots persist completed command IDs and ignore repeated deliveries of the same ID.
+
 ## MQTT topics
 
 ```text
@@ -151,6 +157,17 @@ robots/{robot_id}/state           QoS 1
 robots/{robot_id}/events          reserved
 robots/{robot_id}/commands        QoS 1
 robots/{robot_id}/command-results QoS 1
+```
+
+Command messages sent by the backend to `robots/{robot_id}/commands` include the backend-generated ID:
+
+```json
+{
+  "command_id": "uuid",
+  "robot_id": "robot-01",
+  "command_type": "dock",
+  "payload": { "station": "A" }
+}
 ```
 
 ## Configuration
@@ -167,13 +184,14 @@ ROBOT_ID
 ROBOT_NAME
 TELEMETRY_INTERVAL_SECONDS
 METRICS_PORT
+PROCESSED_COMMANDS_PATH
 ```
 
 ## Current limitations
 
 - No authentication, authorization, TLS, or production hardening.
 - Kafka is provisioned and documented, but backend Kafka publishing is currently a logging placeholder.
-- Command delivery is at-least-once through MQTT with duplicate command suppression in each simulator.
+- Command delivery is at-least-once through MQTT with robot-side duplicate command suppression based on persisted unique command IDs.
 - The simulator uses simple random movement rather than realistic robot physics.
 - Grafana dashboard is intentionally minimal.
 
