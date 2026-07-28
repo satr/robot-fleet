@@ -26,6 +26,11 @@ data/*
 # Contains mutation testing data
 **/mutants.out*/
 
+# Node/SvelteKit
+web-app/node_modules/
+web-app/.svelte-kit/
+web-app/build/
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

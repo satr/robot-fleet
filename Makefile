@@ -8,8 +8,11 @@ DATABASE_URL ?= postgres://robot_fleet:robot_fleet@localhost:5432/robot_fleet
 KAFKA_BROKERS ?= localhost:9092
 RUST_LOG ?= info
 PROCESSED_COMMANDS_PATH ?= data/robots/$(ROBOT_ID)/processed_commands.txt
+WEB_PORT ?= 5173
+PUBLIC_BACKEND_HTTP_URL ?= http://localhost:8089
+PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
 
-.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-test robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-up dev build test docker-build docker-up docker-down docker-logs clean
+.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-test web-run web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-up dev build test docker-build docker-up docker-down docker-logs clean
 
 help:
 	@echo "Robot Fleet commands:"
@@ -19,6 +22,8 @@ help:
 	@echo "  make db-migrate     Run backend SQLx migrations"
 	@echo "  make backend-run    Run backend locally"
 	@echo "  make backend-test   Run backend tests"
+	@echo "  make web-run        Run SvelteKit web app locally"
+	@echo "  make web-build      Build SvelteKit web app"
 	@echo "  make robot-run      Run one simulator locally (set ROBOT_ID=robot-local)"
 	@echo "  make robots-run     Run three simulators locally"
 	@echo "  make dev            Start infrastructure, then run backend locally"
@@ -52,27 +57,26 @@ backend-run:
 backend-test:
 	cargo test -p robot-fleet-backend
 
-robot-run: robot-dev
+web-run:
+	cd web-app && PUBLIC_BACKEND_HTTP_URL="$(PUBLIC_BACKEND_HTTP_URL)" PUBLIC_BACKEND_WS_URL="$(PUBLIC_BACKEND_WS_URL)" WEB_PORT="$(WEB_PORT)" npm run dev
+
+web-build:
+	cd web-app && npm run build
+
+web-check:
+	cd web-app && npm run check
 
 robot-dev:
 	ROBOT_ID="$(ROBOT_ID)" ROBOT_NAME="$(ROBOT_NAME)" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="$(PROCESSED_COMMANDS_PATH)" cargo run -p robot-simulator
 
-robot1-run: robot1-dev
-
 robot1-dev:
 	ROBOT_ID="robot-01" ROBOT_NAME="Robot 01" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-01/processed_commands.txt" cargo run -p robot-simulator
-
-robot2-run: robot2-dev
 
 robot2-dev:
 	ROBOT_ID="robot-02" ROBOT_NAME="Robot 02" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-02/processed_commands.txt" cargo run -p robot-simulator
 
-robot3-run: robot3-dev
-
 robot3-dev:
 	ROBOT_ID="robot-03" ROBOT_NAME="Robot 03" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-03/processed_commands.txt" cargo run -p robot-simulator
-
-robots-run: robots-dev
 
 robots-dev:
 	$(MAKE) robot1-dev &
@@ -80,16 +84,30 @@ robots-dev:
 	$(MAKE) robot3-dev &
 	wait
 
+robot1-up:
+	docker compose up -d robot-01
+
+robot2-up:
+	docker compose up -d robot-02
+
+robot3-up:
+	docker compose up -d robot-03
+
 robots-up:
 	docker compose up -d robot-01 robot-02 robot-03
 
-dev: infra-up backend-run
+dev: infra-up
+	$(MAKE) backend-run &
+	$(MAKE) web-run &
+	wait
 
 build:
 	cargo build --workspace
+	$(MAKE) web-build
 
 test:
 	cargo test --workspace
+	$(MAKE) web-check
 
 docker-build:
 	docker compose build

@@ -1,0 +1,8 @@
+target
+.git
+.env
+data
+web-app/node_modules
+web-app/.svelte-kit
+web-app/build
+*.log

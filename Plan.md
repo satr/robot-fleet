@@ -41,6 +41,7 @@ The project must contain:
 * an MQTT broker;
 * Prometheus;
 * Grafana;
+* a SvelteKit web app;
 * simple simulated robot instances;
 * Docker Compose configuration;
 * a Makefile for common development commands.
@@ -57,6 +58,10 @@ robot-fleet/
 │   ├── Cargo.toml
 │   ├── Dockerfile
 │   ├── migrations/
+│   └── src/
+├── web-app/
+│   ├── Dockerfile
+│   ├── package.json
 │   └── src/
 ├── robot-simulator/
 │   ├── Cargo.toml
@@ -353,6 +358,48 @@ Create one minimal dashboard containing:
 
 Do not spend excessive time on dashboard styling.
 
+## Web app
+
+Create a small SvelteKit web app for inspecting and controlling the robot fleet.
+
+The web app must be runnable in both modes:
+
+* as a local development server for fast UI iteration;
+* as a Docker container included in Docker Compose.
+
+The main page should show a list of robot components, one component per existing robot.
+
+Each robot component should display current robot properties from the backend API:
+
+```text
+robot_id
+name
+status
+battery_level
+position_x
+position_y
+current_command
+current_command_status
+```
+
+Robot state on the page should update through a backend WebSocket stream instead of requiring manual page refreshes. The initial page load may use REST to fetch the current snapshot, then use WebSocket messages for live updates.
+
+The web app should provide controls with simple icons for sending robot commands through the backend API:
+
+* move in the positive X direction;
+* move in the negative X direction;
+* move in the positive Y direction;
+* move in the negative Y direction;
+* run or resume the robot;
+* stop the robot;
+* delete a robot, but only when its derived status is `offline`.
+
+Command controls should call the backend command API instead of publishing directly to MQTT.
+
+Deleting a robot should call a backend API endpoint and must not be available for `online` or `stale` robots.
+
+Keep the first UI intentionally simple: no authentication, no advanced design system, and no map visualization yet.
+
 ## Docker Compose
 
 The complete platform must run with Docker Compose.
@@ -361,6 +408,7 @@ Include services for:
 
 ```text
 backend
+web-app
 robot-01
 robot-02
 robot-03
@@ -392,6 +440,8 @@ Provide `.env.example`.
 
 The backend and robot simulator must also be runnable directly on the developer machine in debug mode while infrastructure runs in Docker.
 
+The web app must also be runnable directly on the developer machine in debug mode while using the local or containerized backend API.
+
 The Makefile must include commands similar to:
 
 ```makefile
@@ -402,6 +452,8 @@ infra-logs
 db-migrate
 backend-run
 backend-test
+web-run
+web-build
 robot-run
 dev
 build
@@ -426,6 +478,12 @@ make backend-run
 ```
 
 Runs the Rust backend locally in debug mode.
+
+```text
+make web-run
+```
+
+Runs the SvelteKit web app locally in development mode.
 
 ```text
 make robot-run ROBOT_ID=robot-local
@@ -472,6 +530,15 @@ RUST_LOG
 
 Treat `ROBOT_ID` as the logical robot identity in topics and payloads. Use a separate MQTT client ID, generated per process by default, so multiple local processes cannot disconnect each other by reusing the same broker session identity.
 
+Web app configuration should include:
+
+```text
+PUBLIC_BACKEND_HTTP_URL
+PUBLIC_BACKEND_WS_URL
+WEB_PORT
+```
+
+The Docker Compose defaults should point browser-side web app calls at the backend's published localhost port. Local development defaults should point at `http://localhost:8089` and the matching local WebSocket URL.
 Provide sensible defaults for local Docker Compose execution.
 
 ## Logging and error handling
@@ -535,6 +602,7 @@ flowchart LR
     Backend --> PostgreSQL
     Kafka --> TelemetryConsumer
     TelemetryConsumer --> TimescaleDB
+    WebApp -->|REST and WebSocket| Backend
     Prometheus --> Backend
     Grafana --> Prometheus
     Dashboard -->|REST| Backend
@@ -598,9 +666,14 @@ The initial task is complete when:
 10. duplicate command deliveries are ignored by the robot;
 11. the robot acknowledges and completes the command;
 12. command status is visible through the backend API;
-13. Prometheus collects backend and simulator metrics;
-14. Grafana displays the initial dashboard;
-15. the README explains how to run and inspect everything.
+13. the web app shows existing robots with status, position, current command status and battery level;
+14. robot state changes are reflected in the web app through WebSocket updates;
+15. the web app can send move, run and stop commands through the backend API;
+16. the web app only allows robot deletion when a robot is offline;
+17. the web app runs locally in development mode and as a Docker Compose service;
+18. Prometheus collects backend and simulator metrics;
+19. Grafana displays the initial dashboard;
+20. the README explains how to run and inspect everything.
 
 Implement this incrementally.
 

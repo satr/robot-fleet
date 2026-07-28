@@ -2,8 +2,11 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use axum::{
-    extract::{Path, State},
-    http::StatusCode,
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, State,
+    },
+    http::{Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -14,7 +17,8 @@ use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
-use tokio::time::sleep;
+use tokio::{sync::broadcast, time::sleep};
+use tower_http::cors::{Any, CorsLayer};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
@@ -24,6 +28,7 @@ struct AppState {
     mqtt: AsyncClient,
     metrics: Arc<Metrics>,
     kafka: KafkaPublisher,
+    robot_events: broadcast::Sender<RobotStreamMessage>,
 }
 
 #[derive(Clone)]
@@ -122,17 +127,28 @@ impl Metrics {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct Robot {
     robot_id: String,
     name: String,
     status: String,
     battery_level: f64,
+    position_x: Option<f64>,
+    position_y: Option<f64>,
     current_mission: Option<String>,
+    current_command: Option<String>,
+    current_command_status: Option<String>,
     last_seen_at: Option<DateTime<Utc>>,
     software_version: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct RobotStreamMessage {
+    event_type: String,
+    robot_id: Option<String>,
+    robot: Option<Robot>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -247,14 +263,17 @@ async fn main() -> anyhow::Result<()> {
 
     let metrics = Arc::new(Metrics::new()?);
     let (mqtt, eventloop) = connect_mqtt(&mqtt_url, "robot-fleet-backend").await?;
+    let (robot_events, _) = broadcast::channel(100);
     let state = AppState {
         pool,
         mqtt,
         metrics,
         kafka: KafkaPublisher::new(kafka_brokers),
+        robot_events,
     };
 
     tokio::spawn(run_mqtt_ingestion(state.clone(), eventloop));
+    tokio::spawn(run_robot_status_broadcast(state.clone()));
 
     let app = router(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], http_port));
@@ -265,15 +284,22 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn router(state: AppState) -> Router {
+    let cors = CorsLayer::new()
+        .allow_methods([Method::GET, Method::POST, Method::DELETE])
+        .allow_origin(Any)
+        .allow_headers(Any);
+
     Router::new()
         .route("/health", get(health))
         .route("/robots", get(list_robots))
-        .route("/robots/:robot_id", get(get_robot))
+        .route("/robots/stream", get(robot_stream))
+        .route("/robots/:robot_id", get(get_robot).delete(delete_robot))
         .route(
             "/robots/:robot_id/commands",
             post(create_command).get(list_commands),
         )
         .route("/metrics", get(metrics))
+        .layer(cors)
         .with_state(state)
 }
 
@@ -292,13 +318,7 @@ async fn list_robots(State(state): State<AppState>) -> Result<Json<Vec<Robot>>, 
         .http_requests
         .with_label_values(&["/robots"])
         .inc();
-    let rows = sqlx::query(
-        "SELECT robot_id, name, status, battery_level, current_mission, last_seen_at, software_version, created_at, updated_at
-         FROM robots ORDER BY robot_id",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(rows.into_iter().map(robot_from_row).collect()))
+    Ok(Json(list_robot_views(&state.pool).await?))
 }
 
 async fn get_robot(
@@ -310,14 +330,51 @@ async fn get_robot(
         .http_requests
         .with_label_values(&["/robots/{robot_id}"])
         .inc();
-    let row = sqlx::query(
-        "SELECT robot_id, name, status, battery_level, current_mission, last_seen_at, software_version, created_at, updated_at
-         FROM robots WHERE robot_id = $1",
-    )
-    .bind(robot_id)
-    .fetch_optional(&state.pool)
-    .await?;
-    row.map(robot_from_row).map(Json).ok_or(ApiError::NotFound)
+    get_robot_view(&state.pool, &robot_id)
+        .await?
+        .map(Json)
+        .ok_or(ApiError::NotFound)
+}
+
+async fn delete_robot(
+    State(state): State<AppState>,
+    Path(robot_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .metrics
+        .http_requests
+        .with_label_values(&["DELETE /robots/{robot_id}"])
+        .inc();
+
+    let robot = get_robot_view(&state.pool, &robot_id)
+        .await?
+        .ok_or(ApiError::NotFound)?;
+    if robot.status != "offline" {
+        return Err(ApiError::BadRequest(
+            "only offline robots can be deleted".into(),
+        ));
+    }
+
+    sqlx::query("DELETE FROM robots WHERE robot_id = $1")
+        .bind(&robot_id)
+        .execute(&state.pool)
+        .await?;
+    let _ = state.robot_events.send(RobotStreamMessage {
+        event_type: "robot_deleted".into(),
+        robot_id: Some(robot_id),
+        robot: None,
+    });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn robot_stream(State(state): State<AppState>, ws: WebSocketUpgrade) -> impl IntoResponse {
+    state
+        .metrics
+        .http_requests
+        .with_label_values(&["/robots/stream"])
+        .inc();
+    let rx = state.robot_events.subscribe();
+    ws.on_upgrade(move |socket| robot_stream_socket(socket, rx))
 }
 
 async fn create_command(
@@ -366,6 +423,7 @@ async fn create_command(
         .publish(topic, QoS::AtLeastOnce, false, message)
         .await?;
     state.metrics.commands_created.inc();
+    broadcast_robot_update(&state, &robot_id).await;
     Ok(Json(command))
 }
 
@@ -401,6 +459,24 @@ async fn metrics(State(state): State<AppState>) -> Result<String, ApiError> {
         .encode(&state.metrics.registry.gather(), &mut buffer)
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
     String::from_utf8(buffer).map_err(|err| ApiError::BadRequest(err.to_string()))
+}
+
+async fn robot_stream_socket(
+    mut socket: WebSocket,
+    mut rx: broadcast::Receiver<RobotStreamMessage>,
+) {
+    while let Ok(event) = rx.recv().await {
+        match serde_json::to_string(&event) {
+            Ok(body) => {
+                if socket.send(Message::Text(body)).await.is_err() {
+                    break;
+                }
+            }
+            Err(err) => {
+                warn!(error = %err, "failed to serialize robot stream message");
+            }
+        }
+    }
 }
 
 async fn run_mqtt_ingestion(state: AppState, mut eventloop: rumqttc::EventLoop) {
@@ -447,6 +523,27 @@ async fn run_mqtt_ingestion(state: AppState, mut eventloop: rumqttc::EventLoop) 
     }
 }
 
+async fn run_robot_status_broadcast(state: AppState) {
+    loop {
+        sleep(Duration::from_secs(5)).await;
+        if let Err(err) = refresh_robot_status_metrics(&state).await {
+            warn!(error = %err, "failed to refresh robot status metrics");
+        }
+        match list_robot_views(&state.pool).await {
+            Ok(robots) => {
+                for robot in robots {
+                    let _ = state.robot_events.send(RobotStreamMessage {
+                        event_type: "robot_updated".into(),
+                        robot_id: Some(robot.robot_id.clone()),
+                        robot: Some(robot),
+                    });
+                }
+            }
+            Err(err) => warn!(error = %err, "failed to broadcast robot status updates"),
+        }
+    }
+}
+
 async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> anyhow::Result<()> {
     if topic.ends_with("/telemetry") {
         let message: TelemetryMessage = serde_json::from_slice(payload)?;
@@ -466,6 +563,7 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
         .bind(&message.payload)
         .execute(&state.pool)
         .await?;
+        broadcast_robot_update(state, &message.robot_id).await;
         state.metrics.telemetry_received.inc();
         state
             .metrics
@@ -483,6 +581,7 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
         let message: StateMessage = serde_json::from_slice(payload)?;
         upsert_robot_state(&state.pool, &message).await?;
         refresh_robot_status_metrics(state).await?;
+        broadcast_robot_update(state, &message.robot_id).await;
         state
             .kafka
             .publish(
@@ -494,6 +593,7 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
     } else if topic.ends_with("/command-results") {
         let message: CommandResultMessage = serde_json::from_slice(payload)?;
         apply_command_result(state, &message).await?;
+        broadcast_robot_update(state, &message.robot_id).await;
         state
             .kafka
             .publish(
@@ -672,6 +772,97 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+async fn list_robot_views(pool: &PgPool) -> Result<Vec<Robot>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT
+             r.robot_id,
+             r.name,
+             r.status,
+             r.battery_level,
+             r.current_mission,
+             r.last_seen_at,
+             r.software_version,
+             r.created_at,
+             r.updated_at,
+             latest_telemetry.position_x,
+             latest_telemetry.position_y,
+             latest_command.command_type AS current_command,
+             latest_command.status AS current_command_status
+         FROM robots r
+         LEFT JOIN LATERAL (
+             SELECT position_x, position_y
+             FROM telemetry
+             WHERE telemetry.robot_id = r.robot_id
+             ORDER BY recorded_at DESC
+             LIMIT 1
+         ) latest_telemetry ON TRUE
+         LEFT JOIN LATERAL (
+             SELECT command_type, status
+             FROM commands
+             WHERE commands.robot_id = r.robot_id
+             ORDER BY created_at DESC
+             LIMIT 1
+         ) latest_command ON TRUE
+         ORDER BY r.robot_id",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(robot_from_row).collect())
+}
+
+async fn get_robot_view(pool: &PgPool, robot_id: &str) -> Result<Option<Robot>, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT
+             r.robot_id,
+             r.name,
+             r.status,
+             r.battery_level,
+             r.current_mission,
+             r.last_seen_at,
+             r.software_version,
+             r.created_at,
+             r.updated_at,
+             latest_telemetry.position_x,
+             latest_telemetry.position_y,
+             latest_command.command_type AS current_command,
+             latest_command.status AS current_command_status
+         FROM robots r
+         LEFT JOIN LATERAL (
+             SELECT position_x, position_y
+             FROM telemetry
+             WHERE telemetry.robot_id = r.robot_id
+             ORDER BY recorded_at DESC
+             LIMIT 1
+         ) latest_telemetry ON TRUE
+         LEFT JOIN LATERAL (
+             SELECT command_type, status
+             FROM commands
+             WHERE commands.robot_id = r.robot_id
+             ORDER BY created_at DESC
+             LIMIT 1
+         ) latest_command ON TRUE
+         WHERE r.robot_id = $1",
+    )
+    .bind(robot_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(robot_from_row))
+}
+
+async fn broadcast_robot_update(state: &AppState, robot_id: &str) {
+    match get_robot_view(&state.pool, robot_id).await {
+        Ok(Some(robot)) => {
+            let _ = state.robot_events.send(RobotStreamMessage {
+                event_type: "robot_updated".into(),
+                robot_id: Some(robot.robot_id.clone()),
+                robot: Some(robot),
+            });
+        }
+        Ok(None) => {}
+        Err(err) => warn!(robot_id, error = %err, "failed to build robot stream update"),
+    }
+}
+
 fn robot_from_row(row: sqlx::postgres::PgRow) -> Robot {
     let last_seen_at = row.get("last_seen_at");
     Robot {
@@ -679,7 +870,11 @@ fn robot_from_row(row: sqlx::postgres::PgRow) -> Robot {
         name: row.get("name"),
         status: robot_status_from_last_seen(Utc::now(), last_seen_at).to_string(),
         battery_level: row.get("battery_level"),
+        position_x: row.get("position_x"),
+        position_y: row.get("position_y"),
         current_mission: row.get("current_mission"),
+        current_command: row.get("current_command"),
+        current_command_status: row.get("current_command_status"),
         last_seen_at,
         software_version: row.get("software_version"),
         created_at: row.get("created_at"),
@@ -745,6 +940,7 @@ mod tests {
             mqtt,
             metrics,
             kafka: KafkaPublisher::new("localhost:9092".into()),
+            robot_events: broadcast::channel(16).0,
         }
     }
 

@@ -1,6 +1,6 @@
 # Robot Fleet
 
-Robot Fleet is a small learning project for building a robot fleet-management platform one piece at a time. It includes a Rust backend, simulated robots, MQTT, Kafka, PostgreSQL with TimescaleDB, Prometheus, Grafana, Docker Compose, and a Makefile.
+Robot Fleet is a small learning project for building a robot fleet-management platform one piece at a time. It includes a Rust backend, a SvelteKit web app, simulated robots, MQTT, Kafka, PostgreSQL with TimescaleDB, Prometheus, Grafana, Docker Compose, and a Makefile.
 
 The first version intentionally favors readability over production completeness.
 
@@ -15,17 +15,19 @@ flowchart LR
     Backend --> PostgreSQL
     Kafka --> TelemetryConsumer
     TelemetryConsumer --> TimescaleDB
+    WebApp -->|REST and WebSocket| Backend
     Prometheus --> Backend
     Grafana --> Prometheus
     Dashboard -->|REST| Backend
 ```
 
-Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST APIs, and publishes commands with unique IDs to robot MQTT command topics. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step.
+Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards and sends commands through the backend. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step.
 
 ## Repository structure
 
 ```text
 backend/                 Rust Axum API, SQLx migrations, MQTT ingestion
+web-app/                 SvelteKit fleet UI
 robot-simulator/         Rust MQTT robot simulator
 infrastructure/mqtt/     Mosquitto config
 infrastructure/prometheus/
@@ -62,13 +64,20 @@ Run one simulator locally:
 make robot-run ROBOT_ID=robot-local ROBOT_NAME="Local Robot"
 ```
 
+Run the web app locally:
+
+```sh
+cd web-app && npm install
+make web-run
+```
+
 Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`.
 
 For local simulator runs, processed command IDs are stored in `data/robots/<ROBOT_ID>/processed_commands.txt`. Docker simulators store the same idempotency state under their mounted `/state` volume.
 
 `ROBOT_ID` is the logical robot identity used in topics and payloads. The simulator uses a separate MQTT client ID, generated per process by default, so multiple local simulator processes do not take over each other's broker sessions. Set `MQTT_CLIENT_ID` only when you need a specific MQTT client identity.
 
-`make dev` starts Docker infrastructure and then runs the backend locally in the foreground. Start local robot simulators in separate terminals.
+`make dev` starts Docker infrastructure and then runs the backend locally in the foreground. Start the web app and local robot simulators in separate terminals.
 
 `make db-migrate` starts `postgres-timescaledb` if needed, waits for it to become ready, and then runs SQLx migrations against the local database port.
 
@@ -115,6 +124,9 @@ make infra-logs
 make db-migrate
 make backend-run
 make backend-test
+make web-run
+make web-build
+make web-check
 make robot-run ROBOT_ID=robot-local
 make dev
 make build
@@ -130,6 +142,7 @@ make clean
 
 ```text
 Backend:    http://localhost:8089
+Web app:    http://localhost:3001  (Docker) or http://localhost:5173 (local dev)
 Grafana:    http://localhost:3000  admin/admin
 Prometheus: http://localhost:9090
 MQTT:       localhost:1883
@@ -143,6 +156,7 @@ Kafka:      localhost:9092
 curl http://localhost:8089/health
 curl http://localhost:8089/robots
 curl http://localhost:8089/robots/robot-01
+websocket ws://localhost:8089/robots/stream
 curl http://localhost:8089/robots/robot-01/commands
 curl -X POST http://localhost:8089/robots/robot-01/commands \
   -H 'content-type: application/json' \
@@ -152,6 +166,8 @@ curl -X POST http://localhost:8089/robots/robot-01/commands \
 The backend assigns every command a unique `command_id`. Robots persist completed command IDs and ignore repeated deliveries of the same ID.
 
 Robot status in `GET /robots` and `GET /robots/{robot_id}` is computed from `last_seen_at`: `online` when the backend saw telemetry or state within 5 seconds, `stale` between 5 and 15 seconds, and `offline` after 15 seconds.
+
+The web app reads `GET /robots` for the initial snapshot and then listens to `GET /robots/stream` as a WebSocket for live robot updates. It sends move, run, and stop commands through `POST /robots/{robot_id}/commands`. Offline robots can be deleted through `DELETE /robots/{robot_id}`.
 
 ## MQTT topics
 
@@ -190,6 +206,9 @@ MQTT_CLIENT_ID
 TELEMETRY_INTERVAL_SECONDS
 METRICS_PORT
 PROCESSED_COMMANDS_PATH
+WEB_PORT
+PUBLIC_BACKEND_HTTP_URL
+PUBLIC_BACKEND_WS_URL
 ```
 
 ## Current limitations
@@ -198,6 +217,7 @@ PROCESSED_COMMANDS_PATH
 - Kafka is provisioned and documented, but backend Kafka publishing is currently a logging placeholder.
 - Command delivery is at-least-once through MQTT with robot-side duplicate command suppression based on persisted unique command IDs.
 - The simulator uses simple random movement rather than realistic robot physics.
+- The web app is intentionally minimal and does not include authentication, route protection, or a map visualization.
 - Grafana dashboard is intentionally minimal.
 
 ## Planned course extensions
@@ -207,4 +227,4 @@ PROCESSED_COMMANDS_PATH
 - Command expiry and retries.
 - Observability improvements and alerting.
 - Emergency event handling.
-- A small dashboard frontend.
+- Richer dashboard interactions and map visualization.
