@@ -30,6 +30,7 @@ robot-simulator/         Rust MQTT robot simulator
 infrastructure/mqtt/     Mosquitto config
 infrastructure/prometheus/
 infrastructure/grafana/  Provisioned datasource and dashboard
+data/                    Persistent local Docker data
 docker-compose.yml       Local platform
 Makefile                 Developer commands
 .env.example             Example configuration
@@ -63,6 +64,8 @@ make robot-run ROBOT_ID=robot-local ROBOT_NAME="Local Robot"
 
 `make dev` starts Docker infrastructure and then runs the backend locally in the foreground. Start local robot simulators in separate terminals.
 
+`make db-migrate` starts `postgres-timescaledb` if needed, waits for it to become ready, and then runs SQLx migrations against the local database port.
+
 ## Docker Compose workflow
 
 Start the full platform with three robot simulators:
@@ -82,6 +85,17 @@ Stop it:
 ```sh
 make docker-down
 ```
+
+Stateful container data is stored in `data/` on the host:
+
+- `data/postgres/`
+- `data/mqtt/`
+- `data/kafka/`
+- `data/prometheus/`
+- `data/grafana/`
+- `data/robots/robot-01/`
+- `data/robots/robot-02/`
+- `data/robots/robot-03/`
 
 ## Makefile commands
 

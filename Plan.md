@@ -1,3 +1,14 @@
+## Persistent local data
+
+Docker Compose stateful services use host folders under `data/` so container stop/start and rebuild cycles do not erase local state:
+
+- `data/postgres/` for PostgreSQL / TimescaleDB (Postgres stores its cluster in `data/postgres/data/`);
+- `data/mqtt/` for Mosquitto persistence;
+- `data/kafka/` for Kafka log segments;
+- `data/prometheus/` for Prometheus TSDB data;
+- `data/grafana/` for Grafana dashboards, users, and provisioning state;
+- `data/robots/robot-01/`, `data/robots/robot-02/`, `data/robots/robot-03/` for simulator command-history files.
+
 Use this as the initial instruction for GitHub Copilot in the new repository.
 
 # Task: Create the initial Robot Fleet learning project

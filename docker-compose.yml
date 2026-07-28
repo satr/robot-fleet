@@ -7,10 +7,11 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-robot_fleet}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-robot_fleet}
       POSTGRES_DB: ${POSTGRES_DB:-robot_fleet}
+      PGDATA: /var/lib/postgresql/data
     ports:
       - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ./data/postgres:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
@@ -25,7 +26,7 @@ services:
       - "1883:1883"
     volumes:
       - ./infrastructure/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - mqtt-data:/mosquitto/data
+      - ./data/mqtt:/mosquitto/data
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -W 3 >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -47,6 +48,7 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /tmp/kafka-logs
       KAFKA_NUM_PARTITIONS: 1
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
@@ -57,6 +59,8 @@ services:
       interval: 10s
       timeout: 10s
       retries: 20
+    volumes:
+      - ./data/kafka:/tmp/kafka-logs
 
   kafka-init:
     image: apache/kafka:latest
@@ -111,7 +115,7 @@ services:
       TELEMETRY_INTERVAL_SECONDS: 5
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
-      - robot-01-data:/data
+      - ./data/robots/robot-01:/data
     depends_on:
       mqtt:
         condition: service_healthy
@@ -129,7 +133,7 @@ services:
       TELEMETRY_INTERVAL_SECONDS: 5
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
-      - robot-02-data:/data
+      - ./data/robots/robot-02:/data
     depends_on:
       mqtt:
         condition: service_healthy
@@ -147,7 +151,7 @@ services:
       TELEMETRY_INTERVAL_SECONDS: 5
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
-      - robot-03-data:/data
+      - ./data/robots/robot-03:/data
     depends_on:
       mqtt:
         condition: service_healthy
@@ -160,7 +164,7 @@ services:
       - "9090:9090"
     volumes:
       - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
+      - ./data/prometheus:/prometheus
 
   grafana:
     image: grafana/grafana:10.4.4
@@ -172,17 +176,8 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
-      - grafana-data:/var/lib/grafana
+      - ./data/grafana:/var/lib/grafana
       - ./infrastructure/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
-
-volumes:
-  postgres-data:
-  mqtt-data:
-  prometheus-data:
-  grafana-data:
-  robot-01-data:
-  robot-02-data:
-  robot-03-data:

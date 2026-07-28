@@ -38,6 +38,10 @@ infra-logs:
 	docker compose logs -f postgres-timescaledb mqtt kafka kafka-init prometheus grafana
 
 db-migrate:
+	docker compose up -d postgres-timescaledb
+	@until docker compose exec -T postgres-timescaledb pg_isready -U "$${POSTGRES_USER:-robot_fleet}" -d "$${POSTGRES_DB:-robot_fleet}" >/dev/null 2>&1; do \
+		sleep 1; \
+	done
 	cd backend && DATABASE_URL="$(DATABASE_URL)" cargo sqlx migrate run
 
 backend-run:
