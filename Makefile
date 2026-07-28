@@ -7,6 +7,7 @@ MQTT_URL ?= mqtt://localhost:1883
 DATABASE_URL ?= postgres://robot_fleet:robot_fleet@localhost:5432/robot_fleet
 KAFKA_BROKERS ?= localhost:9092
 RUST_LOG ?= info
+PROCESSED_COMMANDS_PATH ?= data/robots/$(ROBOT_ID)/processed_commands.txt
 
 .PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-test robot-run dev build test docker-build docker-up docker-down docker-logs clean
 
@@ -51,7 +52,7 @@ backend-test:
 	cargo test -p robot-fleet-backend
 
 robot-run:
-	ROBOT_ID="$(ROBOT_ID)" ROBOT_NAME="$(ROBOT_NAME)" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" cargo run -p robot-simulator
+	ROBOT_ID="$(ROBOT_ID)" ROBOT_NAME="$(ROBOT_NAME)" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="$(PROCESSED_COMMANDS_PATH)" cargo run -p robot-simulator
 
 dev: infra-up backend-run
 

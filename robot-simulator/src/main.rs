@@ -8,7 +8,10 @@ use rand::Rng;
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::{sync::Mutex, time::sleep};
+use tokio::{
+    sync::Mutex,
+    time::{interval, sleep, MissedTickBehavior},
+};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -146,7 +149,7 @@ impl Config {
                 .context("METRICS_PORT must be a port")?,
             processed_commands_path: env_or(
                 "PROCESSED_COMMANDS_PATH",
-                "/data/processed_commands.txt",
+                "/state/processed_commands.txt",
             )
             .into(),
         })
@@ -168,42 +171,37 @@ async fn run_robot(
             .await?;
         publish_state(&client, &config, &state).await?;
 
-        let telemetry_client = client.clone();
-        let telemetry_config = config.clone();
-        let telemetry_state = state.clone();
-        let telemetry_metrics = metrics.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Err(err) = publish_telemetry(
-                    &telemetry_client,
-                    &telemetry_config,
-                    &telemetry_state,
-                    &telemetry_metrics,
-                )
-                .await
-                {
-                    warn!(robot_id = telemetry_config.robot_id, error = %err, "telemetry publish failed");
-                }
-                sleep(telemetry_config.telemetry_interval).await;
-            }
-        });
+        let mut telemetry_interval = interval(config.telemetry_interval);
+        telemetry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
-            match eventloop.poll().await {
-                Ok(Event::Incoming(Incoming::Publish(publish))) => {
-                    metrics.mqtt_connection_status.set(1.0);
-                    if let Err(err) =
-                        handle_command(&client, &config, &state, &metrics, &publish.payload).await
-                    {
-                        warn!(robot_id = config.robot_id, error = %err, "command handling failed");
+            tokio::select! {
+                poll_result = eventloop.poll() => {
+                    match poll_result {
+                        Ok(Event::Incoming(Incoming::Publish(publish))) => {
+                            metrics.mqtt_connection_status.set(1.0);
+                            if let Err(err) =
+                                handle_command(&client, &config, &state, &metrics, &publish.payload).await
+                            {
+                                warn!(robot_id = config.robot_id, error = %err, "command handling failed");
+                            }
+                        }
+                        Ok(_) => metrics.mqtt_connection_status.set(1.0),
+                        Err(err) => {
+                            metrics.mqtt_connection_status.set(0.0);
+                            warn!(robot_id = config.robot_id, error = %err, "MQTT disconnected; reconnecting");
+                            sleep(Duration::from_secs(2)).await;
+                            break;
+                        }
                     }
                 }
-                Ok(_) => metrics.mqtt_connection_status.set(1.0),
-                Err(err) => {
-                    metrics.mqtt_connection_status.set(0.0);
-                    warn!(robot_id = config.robot_id, error = %err, "MQTT disconnected; reconnecting");
-                    sleep(Duration::from_secs(2)).await;
-                    break;
+                _ = telemetry_interval.tick() => {
+                    if let Err(err) = publish_telemetry(&client, &config, &state, &metrics).await {
+                        metrics.mqtt_connection_status.set(0.0);
+                        warn!(robot_id = config.robot_id, error = %err, "telemetry publish failed; reconnecting");
+                        sleep(Duration::from_secs(2)).await;
+                        break;
+                    }
                 }
             }
         }

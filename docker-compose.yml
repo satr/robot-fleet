@@ -115,7 +115,7 @@ services:
       TELEMETRY_INTERVAL_SECONDS: 5
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
-      - ./data/robots/robot-01:/data
+      - ./data/robots/robot-01:/state
     depends_on:
       mqtt:
         condition: service_healthy
@@ -133,7 +133,7 @@ services:
       TELEMETRY_INTERVAL_SECONDS: 5
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
-      - ./data/robots/robot-02:/data
+      - ./data/robots/robot-02:/state
     depends_on:
       mqtt:
         condition: service_healthy
@@ -151,7 +151,7 @@ services:
       TELEMETRY_INTERVAL_SECONDS: 5
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
-      - ./data/robots/robot-03:/data
+      - ./data/robots/robot-03:/state
     depends_on:
       mqtt:
         condition: service_healthy

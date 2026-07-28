@@ -11,7 +11,6 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/robot-simulator /usr/local/bin/robot-simulator
-RUN mkdir -p /data
-VOLUME ["/data"]
+RUN mkdir -p /state
 EXPOSE 9100
 CMD ["robot-simulator"]
