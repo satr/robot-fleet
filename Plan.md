@@ -513,7 +513,7 @@ flowchart LR
 Document expected local URLs, for example:
 
 ```text
-Backend:    http://localhost:8080
+Backend:    http://localhost:8089
 Grafana:    http://localhost:3000
 Prometheus: http://localhost:9090
 MQTT:       localhost:1883

@@ -222,7 +222,7 @@ async fn main() -> anyhow::Result<()> {
     );
     let mqtt_url = env_or("MQTT_URL", "mqtt://localhost:1883");
     let kafka_brokers = env_or("KAFKA_BROKERS", "localhost:9092");
-    let http_port: u16 = env_or("HTTP_PORT", "8080")
+    let http_port: u16 = env_or("HTTP_PORT", "8089")
         .parse()
         .context("HTTP_PORT must be a port")?;
 

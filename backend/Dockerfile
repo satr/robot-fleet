@@ -12,5 +12,5 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=builder /app/target/release/robot-fleet-backend /usr/local/bin/robot-fleet-backend
 COPY backend/migrations ./migrations
-EXPOSE 8080
+EXPOSE 8089
 CMD ["robot-fleet-backend"]

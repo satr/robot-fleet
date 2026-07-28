@@ -107,7 +107,7 @@ make clean
 ## Service URLs
 
 ```text
-Backend:    http://localhost:8080
+Backend:    http://localhost:8089
 Grafana:    http://localhost:3000  admin/admin
 Prometheus: http://localhost:9090
 MQTT:       localhost:1883
@@ -118,11 +118,11 @@ Kafka:      localhost:9092
 ## API examples
 
 ```sh
-curl http://localhost:8080/health
-curl http://localhost:8080/robots
-curl http://localhost:8080/robots/robot-01
-curl http://localhost:8080/robots/robot-01/commands
-curl -X POST http://localhost:8080/robots/robot-01/commands \
+curl http://localhost:8089/health
+curl http://localhost:8089/robots
+curl http://localhost:8089/robots/robot-01
+curl http://localhost:8089/robots/robot-01/commands
+curl -X POST http://localhost:8089/robots/robot-01/commands \
   -H 'content-type: application/json' \
   -d '{"command_type":"dock","payload":{"station":"A"}}'
 ```

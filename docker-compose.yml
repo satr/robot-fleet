@@ -80,9 +80,9 @@ services:
       MQTT_URL: mqtt://mqtt:1883
       KAFKA_BROKERS: kafka:9092
       RUST_LOG: ${RUST_LOG:-info}
-      HTTP_PORT: 8080
+      HTTP_PORT: 8089
     ports:
-      - "8080:8080"
+      - "8089:8089"
     depends_on:
       postgres-timescaledb:
         condition: service_healthy
@@ -93,7 +93,7 @@ services:
       kafka-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8089/health >/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
