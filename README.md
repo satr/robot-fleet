@@ -20,7 +20,7 @@ flowchart LR
     Dashboard -->|REST| Backend
 ```
 
-Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST APIs, and publishes commands with unique IDs to robot MQTT command topics. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step.
+Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST APIs, and publishes commands with unique IDs to robot MQTT command topics. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step.
 
 ## Repository structure
 
@@ -65,6 +65,8 @@ make robot-run ROBOT_ID=robot-local ROBOT_NAME="Local Robot"
 Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`.
 
 For local simulator runs, processed command IDs are stored in `data/robots/<ROBOT_ID>/processed_commands.txt`. Docker simulators store the same idempotency state under their mounted `/state` volume.
+
+`ROBOT_ID` is the logical robot identity used in topics and payloads. The simulator uses a separate MQTT client ID, generated per process by default, so multiple local simulator processes do not take over each other's broker sessions. Set `MQTT_CLIENT_ID` only when you need a specific MQTT client identity.
 
 `make dev` starts Docker infrastructure and then runs the backend locally in the foreground. Start local robot simulators in separate terminals.
 
@@ -149,6 +151,8 @@ curl -X POST http://localhost:8089/robots/robot-01/commands \
 
 The backend assigns every command a unique `command_id`. Robots persist completed command IDs and ignore repeated deliveries of the same ID.
 
+Robot status in `GET /robots` and `GET /robots/{robot_id}` is computed from `last_seen_at`: `online` when the backend saw telemetry or state within 5 seconds, `stale` between 5 and 15 seconds, and `offline` after 15 seconds.
+
 ## MQTT topics
 
 ```text
@@ -182,6 +186,7 @@ RUST_LOG
 HTTP_PORT
 ROBOT_ID
 ROBOT_NAME
+MQTT_CLIENT_ID
 TELEMETRY_INTERVAL_SECONDS
 METRICS_PORT
 PROCESSED_COMMANDS_PATH

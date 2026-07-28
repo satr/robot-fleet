@@ -19,6 +19,7 @@ use uuid::Uuid;
 struct Config {
     robot_id: String,
     robot_name: String,
+    mqtt_client_id: String,
     mqtt_url: String,
     telemetry_interval: Duration,
     metrics_port: u16,
@@ -135,9 +136,15 @@ async fn main() -> anyhow::Result<()> {
 
 impl Config {
     fn from_env() -> anyhow::Result<Self> {
+        let robot_id = env_or("ROBOT_ID", "robot-local");
+        let mqtt_client_id = std::env::var("MQTT_CLIENT_ID")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| format!("{robot_id}-{}", std::process::id()));
         Ok(Self {
-            robot_id: env_or("ROBOT_ID", "robot-local"),
+            robot_id,
             robot_name: env_or("ROBOT_NAME", "Local Robot"),
+            mqtt_client_id,
             mqtt_url: env_or("MQTT_URL", "mqtt://localhost:1883"),
             telemetry_interval: Duration::from_secs(
                 env_or("TELEMETRY_INTERVAL_SECONDS", "5")
@@ -396,7 +403,7 @@ async fn run_metrics_server(metrics: Arc<Metrics>, port: u16) -> anyhow::Result<
 
 async fn connect_mqtt(config: &Config) -> anyhow::Result<(AsyncClient, rumqttc::EventLoop)> {
     let (host, port) = parse_mqtt_url(&config.mqtt_url)?;
-    let mut options = MqttOptions::new(&config.robot_id, host, port);
+    let mut options = MqttOptions::new(&config.mqtt_client_id, host, port);
     options.set_keep_alive(Duration::from_secs(10));
     Ok(AsyncClient::new(options, 10))
 }

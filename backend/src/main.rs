@@ -50,6 +50,8 @@ impl KafkaPublisher {
 struct Metrics {
     registry: Registry,
     robots_online: Gauge,
+    robots_stale: Gauge,
+    robots_offline: Gauge,
     messages_received: IntCounter,
     telemetry_received: IntCounter,
     commands_created: IntCounter,
@@ -64,6 +66,8 @@ impl Metrics {
     fn new() -> anyhow::Result<Self> {
         let registry = Registry::new();
         let robots_online = Gauge::new("robots_online", "Number of robots currently online")?;
+        let robots_stale = Gauge::new("robots_stale", "Number of robots currently stalled")?;
+        let robots_offline = Gauge::new("robots_offline", "Number of robots currently offline")?;
         let messages_received = IntCounter::new(
             "robot_messages_received_total",
             "MQTT robot messages received by the backend",
@@ -90,6 +94,8 @@ impl Metrics {
         )?;
 
         registry.register(Box::new(robots_online.clone()))?;
+        registry.register(Box::new(robots_stale.clone()))?;
+        registry.register(Box::new(robots_offline.clone()))?;
         registry.register(Box::new(messages_received.clone()))?;
         registry.register(Box::new(telemetry_received.clone()))?;
         registry.register(Box::new(commands_created.clone()))?;
@@ -102,6 +108,8 @@ impl Metrics {
         Ok(Self {
             registry,
             robots_online,
+            robots_stale,
+            robots_offline,
             messages_received,
             telemetry_received,
             commands_created,
@@ -386,6 +394,7 @@ async fn metrics(State(state): State<AppState>) -> Result<String, ApiError> {
         .http_requests
         .with_label_values(&["/metrics"])
         .inc();
+    refresh_robot_status_metrics(&state).await?;
     let encoder = TextEncoder::new();
     let mut buffer = Vec::new();
     encoder
@@ -442,6 +451,7 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
     if topic.ends_with("/telemetry") {
         let message: TelemetryMessage = serde_json::from_slice(payload)?;
         upsert_robot_from_telemetry(&state.pool, &message).await?;
+        refresh_robot_status_metrics(state).await?;
         sqlx::query(
             "INSERT INTO telemetry (robot_id, recorded_at, battery_level, temperature, position_x, position_y, payload)
              VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -472,7 +482,7 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
     } else if topic.ends_with("/state") {
         let message: StateMessage = serde_json::from_slice(payload)?;
         upsert_robot_state(&state.pool, &message).await?;
-        refresh_online_metric(state).await?;
+        refresh_robot_status_metrics(state).await?;
         state
             .kafka
             .publish(
@@ -502,13 +512,12 @@ async fn upsert_robot_from_telemetry(
 ) -> anyhow::Result<()> {
     sqlx::query(
         "INSERT INTO robots (robot_id, name, status, battery_level, last_seen_at, software_version, updated_at)
-         VALUES ($1, $1, 'online', $2, $3, 'unknown', now())
+         VALUES ($1, $1, 'online', $2, now(), 'unknown', now())
          ON CONFLICT (robot_id) DO UPDATE
-         SET status = 'online', battery_level = EXCLUDED.battery_level, last_seen_at = EXCLUDED.last_seen_at, updated_at = now()",
+         SET status = 'online', battery_level = EXCLUDED.battery_level, last_seen_at = now(), updated_at = now()",
     )
     .bind(&message.robot_id)
     .bind(message.battery_level)
-    .bind(message.recorded_at)
     .execute(pool)
     .await?;
     Ok(())
@@ -517,22 +526,20 @@ async fn upsert_robot_from_telemetry(
 async fn upsert_robot_state(pool: &PgPool, message: &StateMessage) -> anyhow::Result<()> {
     sqlx::query(
         "INSERT INTO robots (robot_id, name, status, battery_level, current_mission, last_seen_at, software_version, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+         VALUES ($1, $2, 'online', $3, $4, now(), $5, now())
          ON CONFLICT (robot_id) DO UPDATE
          SET name = EXCLUDED.name,
-             status = EXCLUDED.status,
-             battery_level = EXCLUDED.battery_level,
-             current_mission = EXCLUDED.current_mission,
-             last_seen_at = EXCLUDED.last_seen_at,
-             software_version = EXCLUDED.software_version,
-             updated_at = now()",
+            status = 'online',
+            battery_level = EXCLUDED.battery_level,
+            current_mission = EXCLUDED.current_mission,
+            last_seen_at = now(),
+            software_version = EXCLUDED.software_version,
+            updated_at = now()",
     )
     .bind(&message.robot_id)
     .bind(&message.name)
-    .bind(&message.status)
     .bind(message.battery_level)
     .bind(&message.current_mission)
-    .bind(message.recorded_at)
     .bind(&message.software_version)
     .execute(pool)
     .await?;
@@ -597,11 +604,29 @@ async fn apply_command_result(
     Ok(())
 }
 
-async fn refresh_online_metric(state: &AppState) -> anyhow::Result<()> {
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM robots WHERE status = 'online'")
-        .fetch_one(&state.pool)
-        .await?;
-    state.metrics.robots_online.set(count as f64);
+async fn refresh_robot_status_metrics(state: &AppState) -> Result<(), sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT
+             COUNT(*) FILTER (WHERE last_seen_at >= now() - interval '5 seconds') AS online_count,
+             COUNT(*) FILTER (
+                 WHERE last_seen_at < now() - interval '5 seconds'
+                   AND last_seen_at >= now() - interval '15 seconds'
+             ) AS stale_count,
+             COUNT(*) FILTER (
+                 WHERE last_seen_at IS NULL
+                    OR last_seen_at < now() - interval '15 seconds'
+             ) AS offline_count
+         FROM robots",
+    )
+    .fetch_one(&state.pool)
+    .await?;
+
+    let online_count: i64 = row.get("online_count");
+    let stale_count: i64 = row.get("stale_count");
+    let offline_count: i64 = row.get("offline_count");
+    state.metrics.robots_online.set(online_count as f64);
+    state.metrics.robots_stale.set(stale_count as f64);
+    state.metrics.robots_offline.set(offline_count as f64);
     Ok(())
 }
 
@@ -648,16 +673,34 @@ fn env_or(key: &str, default: &str) -> String {
 }
 
 fn robot_from_row(row: sqlx::postgres::PgRow) -> Robot {
+    let last_seen_at = row.get("last_seen_at");
     Robot {
         robot_id: row.get("robot_id"),
         name: row.get("name"),
-        status: row.get("status"),
+        status: robot_status_from_last_seen(Utc::now(), last_seen_at).to_string(),
         battery_level: row.get("battery_level"),
         current_mission: row.get("current_mission"),
-        last_seen_at: row.get("last_seen_at"),
+        last_seen_at,
         software_version: row.get("software_version"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
+    }
+}
+
+fn robot_status_from_last_seen(
+    now: DateTime<Utc>,
+    last_seen_at: Option<DateTime<Utc>>,
+) -> &'static str {
+    let Some(last_seen_at) = last_seen_at else {
+        return "offline";
+    };
+    let age_seconds = now.signed_duration_since(last_seen_at).num_seconds();
+    if age_seconds <= 5 {
+        "online"
+    } else if age_seconds <= 15 {
+        "stale"
+    } else {
+        "offline"
     }
 }
 
@@ -757,5 +800,29 @@ mod tests {
         assert_eq!(payload["command_type"], "dock");
         assert_eq!(payload["payload"], json!({ "station": "A" }));
         assert!(payload.get("status").is_none());
+    }
+
+    #[test]
+    fn robot_status_is_derived_from_last_seen_age() {
+        let now = Utc::now();
+
+        assert_eq!(robot_status_from_last_seen(now, None), "offline");
+        assert_eq!(robot_status_from_last_seen(now, Some(now)), "online");
+        assert_eq!(
+            robot_status_from_last_seen(now, Some(now - chrono::Duration::seconds(5))),
+            "online"
+        );
+        assert_eq!(
+            robot_status_from_last_seen(now, Some(now - chrono::Duration::seconds(6))),
+            "stale"
+        );
+        assert_eq!(
+            robot_status_from_last_seen(now, Some(now - chrono::Duration::seconds(15))),
+            "stale"
+        );
+        assert_eq!(
+            robot_status_from_last_seen(now, Some(now - chrono::Duration::seconds(16))),
+            "offline"
+        );
     }
 }

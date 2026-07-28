@@ -190,6 +190,8 @@ Convert the telemetry table into a TimescaleDB hypertable using `recorded_at` as
 
 Keep current robot state in the `robots` table.
 
+Derive API-facing robot status from `last_seen_at` instead of trusting a robot-reported status string: `online` if telemetry or state was seen within 5 seconds, `stale` if it was seen between 5 and 15 seconds ago, and `offline` after 15 seconds.
+
 Keep historical telemetry in the `telemetry` hypertable.
 
 ## MQTT
@@ -272,7 +274,7 @@ robot_id
 name
 battery level
 position
-online/offline state
+last-seen-derived online/stale/offline state
 current mission
 software version
 ```
@@ -325,6 +327,8 @@ Expose initial metrics such as:
 
 ```text
 robots_online
+robots_stale
+robots_offline
 robot_messages_received_total
 robot_telemetry_received_total
 commands_created_total
@@ -460,10 +464,13 @@ Robot configuration should include:
 ```text
 ROBOT_ID
 ROBOT_NAME
+MQTT_CLIENT_ID
 MQTT_URL
 TELEMETRY_INTERVAL_SECONDS
 RUST_LOG
 ```
+
+Treat `ROBOT_ID` as the logical robot identity in topics and payloads. Use a separate MQTT client ID, generated per process by default, so multiple local processes cannot disconnect each other by reusing the same broker session identity.
 
 Provide sensible defaults for local Docker Compose execution.
 
