@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: backend
+    static_configs:
+      - targets: ["backend:8080"]
+
+  - job_name: robots
+    static_configs:
+      - targets: ["robot-01:9100", "robot-02:9100", "robot-03:9100"]
