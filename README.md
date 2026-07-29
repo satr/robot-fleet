@@ -21,7 +21,7 @@ flowchart LR
     Dashboard -->|REST| Backend
 ```
 
-Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards and sends commands through the backend. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step.
+Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards with position, velocity, and direction, and sends commands through the backend. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step. Grafana includes per-robot motion metrics for velocity and direction.
 
 ## Repository structure
 
@@ -80,6 +80,8 @@ For local simulator runs, processed command IDs are stored in `data/robots/<ROBO
 
 `make dev` starts Docker infrastructure and then runs the backend locally in the foreground. Start the web app and local robot simulators in separate terminals.
 
+Use `make backend-stop-dev`, `make web-stop-dev`, `make robots-stop-dev`, or `make stop-dev` to stop the corresponding local dev processes.
+
 `make db-migrate` starts `postgres-timescaledb` if needed, waits for it to become ready, and then runs SQLx migrations against the local database port.
 
 ## Docker Compose workflow
@@ -124,16 +126,20 @@ make infra-down
 make infra-logs
 make db-migrate
 make backend-run
+make backend-stop-dev
 make backend-test
 make web-run
+make web-stop-dev
 make web-build
 make web-check
 make robot-run ROBOT_ID=robot-local
+make robots-stop-dev
 make robot1-down
 make robot2-down
 make robot3-down
 make robots-down
 make dev
+make stop-dev
 make build
 make test
 make docker-build

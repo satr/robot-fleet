@@ -7,6 +7,8 @@ export type Robot = {
   battery_level: number;
   position_x: number | null;
   position_y: number | null;
+  velocity_cm_s: number | null;
+  direction_degrees: number | null;
   current_mission: string | null;
   current_command: string | null;
   current_command_status: string | null;

@@ -94,6 +94,14 @@
   function coordinate(value: number | null) {
     return value === null ? 'n/a' : value.toFixed(2);
   }
+
+  function speed(value: number | null) {
+    return value === null ? 'n/a' : `${value.toFixed(2)} cm/s`;
+  }
+
+  function heading(value: number | null) {
+    return value === null ? 'n/a' : `${value.toFixed(1)}°`;
+  }
 </script>
 
 <svelte:head>
@@ -139,7 +147,15 @@
             </div>
             <div>
               <dt>Position</dt>
-              <dd>x {coordinate(robot.position_x)}, y {coordinate(robot.position_y)}</dd>
+              <dd>x {coordinate(robot.position_x)} cm, y {coordinate(robot.position_y)} cm</dd>
+            </div>
+            <div>
+              <dt>Velocity</dt>
+              <dd>{speed(robot.velocity_cm_s)}</dd>
+            </div>
+            <div>
+              <dt>Direction</dt>
+              <dd>{heading(robot.direction_degrees)}</dd>
             </div>
             <div>
               <dt>Current command</dt>

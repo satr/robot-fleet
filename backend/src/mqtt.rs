@@ -59,6 +59,9 @@ pub(crate) async fn run_robot_status_broadcast(state: AppState) {
         if let Err(err) = db::refresh_robot_status_metrics(&state).await {
             warn!(error = %err, "failed to refresh robot status metrics");
         }
+        if let Err(err) = db::refresh_robot_motion_metrics(&state).await {
+            warn!(error = %err, "failed to refresh robot motion metrics");
+        }
         match db::list_robot_views(&state.pool).await {
             Ok(robots) => {
                 for robot in robots {
@@ -83,9 +86,9 @@ async fn subscribe(state: &AppState, topic: &str, qos: QoS, description: &str) {
 async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> anyhow::Result<()> {
     if topic.ends_with("/telemetry") {
         let message: TelemetryMessage = serde_json::from_slice(payload)?;
-        db::upsert_robot_from_telemetry(&state.pool, &message).await?;
+        db::upsert_robot_from_telemetry(state, &message).await?;
         db::refresh_robot_status_metrics(state).await?;
-        db::insert_telemetry(&state.pool, &message).await?;
+        db::insert_telemetry(state, &message).await?;
         app::broadcast_robot_update(state, &message.robot_id).await;
         state.metrics.telemetry_received.inc();
         state
@@ -95,7 +98,7 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
         state.kafka.publish_telemetry(&message).await?;
     } else if topic.ends_with("/state") {
         let message: StateMessage = serde_json::from_slice(payload)?;
-        db::upsert_robot_state(&state.pool, &message).await?;
+        db::upsert_robot_state(state, &message).await?;
         db::refresh_robot_status_metrics(state).await?;
         app::broadcast_robot_update(state, &message.robot_id).await;
         state

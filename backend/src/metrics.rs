@@ -1,4 +1,4 @@
-use prometheus::{Gauge, IntCounter, IntCounterVec, Opts, Registry};
+use prometheus::{Gauge, GaugeVec, IntCounter, IntCounterVec, Opts, Registry};
 
 pub(crate) struct Metrics {
     pub(crate) registry: Registry,
@@ -12,6 +12,10 @@ pub(crate) struct Metrics {
     pub(crate) command_failures: IntCounter,
     pub(crate) mqtt_connection_status: Gauge,
     pub(crate) telemetry_lag_seconds: Gauge,
+    pub(crate) robot_position_x_cm: GaugeVec,
+    pub(crate) robot_position_y_cm: GaugeVec,
+    pub(crate) robot_velocity_cm_s: GaugeVec,
+    pub(crate) robot_direction_degrees: GaugeVec,
     pub(crate) http_requests: IntCounterVec,
 }
 
@@ -41,6 +45,34 @@ impl Metrics {
             "telemetry_ingestion_lag_seconds",
             "Seconds between telemetry recording and ingestion",
         )?;
+        let robot_position_x_cm = GaugeVec::new(
+            Opts::new(
+                "robot_position_x_cm",
+                "Latest robot position on the X axis in centimeters",
+            ),
+            &["robot_id"],
+        )?;
+        let robot_position_y_cm = GaugeVec::new(
+            Opts::new(
+                "robot_position_y_cm",
+                "Latest robot position on the Y axis in centimeters",
+            ),
+            &["robot_id"],
+        )?;
+        let robot_velocity_cm_s = GaugeVec::new(
+            Opts::new(
+                "robot_velocity_cm_s",
+                "Latest robot velocity in centimeters per second",
+            ),
+            &["robot_id"],
+        )?;
+        let robot_direction_degrees = GaugeVec::new(
+            Opts::new(
+                "robot_direction_degrees",
+                "Latest robot direction in degrees",
+            ),
+            &["robot_id"],
+        )?;
         let http_requests = IntCounterVec::new(
             Opts::new("backend_http_requests_total", "Backend HTTP requests"),
             &["route"],
@@ -56,6 +88,10 @@ impl Metrics {
         registry.register(Box::new(command_failures.clone()))?;
         registry.register(Box::new(mqtt_connection_status.clone()))?;
         registry.register(Box::new(telemetry_lag_seconds.clone()))?;
+        registry.register(Box::new(robot_position_x_cm.clone()))?;
+        registry.register(Box::new(robot_position_y_cm.clone()))?;
+        registry.register(Box::new(robot_velocity_cm_s.clone()))?;
+        registry.register(Box::new(robot_direction_degrees.clone()))?;
         registry.register(Box::new(http_requests.clone()))?;
 
         Ok(Self {
@@ -70,6 +106,10 @@ impl Metrics {
             command_failures,
             mqtt_connection_status,
             telemetry_lag_seconds,
+            robot_position_x_cm,
+            robot_position_y_cm,
+            robot_velocity_cm_s,
+            robot_direction_degrees,
             http_requests,
         })
     }

@@ -11,6 +11,8 @@ pub struct Robot {
     pub battery_level: f64,
     pub position_x: Option<f64>,
     pub position_y: Option<f64>,
+    pub velocity_cm_s: Option<f64>,
+    pub direction_degrees: Option<f64>,
     pub current_mission: Option<String>,
     pub current_command: Option<String>,
     pub current_command_status: Option<String>,
@@ -33,6 +35,10 @@ pub struct StateMessage {
     pub name: String,
     pub status: String,
     pub battery_level: f64,
+    pub position_x: f64,
+    pub position_y: f64,
+    pub velocity_cm_s: f64,
+    pub direction_degrees: f64,
     pub current_mission: Option<String>,
     pub software_version: String,
     pub recorded_at: DateTime<Utc>,
@@ -46,6 +52,8 @@ pub struct TelemetryMessage {
     pub temperature: f64,
     pub position_x: f64,
     pub position_y: f64,
+    pub velocity_cm_s: f64,
+    pub direction_degrees: f64,
     pub payload: Value,
 }
 

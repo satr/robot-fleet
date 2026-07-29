@@ -163,6 +163,7 @@ async fn metrics(State(state): State<AppState>) -> Result<String, ApiError> {
         .with_label_values(&["/metrics"])
         .inc();
     db::refresh_robot_status_metrics(&state).await?;
+    db::refresh_robot_motion_metrics(&state).await?;
     let encoder = TextEncoder::new();
     let mut buffer = Vec::new();
     encoder

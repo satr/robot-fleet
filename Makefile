@@ -13,7 +13,7 @@ WEB_PORT ?= 5173
 PUBLIC_BACKEND_HTTP_URL ?= http://localhost:8089
 PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
 
-.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-test web-run web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-build docker-up docker-down docker-logs clean
+.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-build docker-up docker-down docker-logs clean
 
 help:
 	@echo "Robot Fleet commands:"
@@ -22,11 +22,15 @@ help:
 	@echo "  make infra-logs     Follow infrastructure logs"
 	@echo "  make db-migrate     Run backend SQLx migrations"
 	@echo "  make backend-run    Run backend locally"
+	@echo "  make backend-stop-dev  Stop the local backend dev process"
 	@echo "  make backend-test   Run backend tests"
 	@echo "  make web-run        Run SvelteKit web app locally"
+	@echo "  make web-stop-dev     Stop the local web app dev process"
 	@echo "  make web-build      Build SvelteKit web app"
 	@echo "  make robot-run      Run one simulator locally (set ROBOT_ID=robot-local)"
 	@echo "  make robots-run     Run three simulators locally"
+	@echo "  make robots-stop-dev  Stop the local robot dev processes"
+	@echo "  make stop-dev         Stop local backend, web app, and robot dev processes"
 	@echo "  make robot1-down    Stop robot-01 container"
 	@echo "  make robot2-down    Stop robot-02 container"
 	@echo "  make robot3-down    Stop robot-03 container"
@@ -59,11 +63,17 @@ db-migrate:
 backend-run:
 	DATABASE_URL="$(DATABASE_URL)" MQTT_URL="$(MQTT_URL)" KAFKA_BROKERS="$(KAFKA_BROKERS)" RUST_LOG="$(RUST_LOG)" cargo run -p robot-fleet-backend
 
+backend-stop-dev:
+	pkill -f 'robot-fleet-backend'
+
 backend-test:
 	cargo test -p robot-fleet-backend
 
 web-run:
 	cd web-app && PUBLIC_BACKEND_HTTP_URL="$(PUBLIC_BACKEND_HTTP_URL)" PUBLIC_BACKEND_WS_URL="$(PUBLIC_BACKEND_WS_URL)" WEB_PORT="$(WEB_PORT)" npm run dev
+
+web-stop-dev:
+	pkill -f 'npm run dev'
 
 web-build:
 	cd web-app && npm run build
@@ -88,6 +98,11 @@ robots-dev:
 	$(MAKE) robot2-dev &
 	$(MAKE) robot3-dev &
 	wait
+
+robots-stop-dev:
+	pkill -f 'robot-simulator'
+
+stop-dev: backend-stop-dev web-stop-dev robots-stop-dev
 
 robot1-up:
 	docker compose up -d robot-01
