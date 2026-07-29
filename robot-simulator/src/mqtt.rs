@@ -24,13 +24,33 @@ pub(crate) async fn run_robot(
     metrics: Arc<Metrics>,
 ) -> anyhow::Result<()> {
     loop {
-        let (client, mut eventloop) = connect_mqtt(&config).await?;
-        client
+        let (client, eventloop) = connect_mqtt(&config)?;
+        let eventloop_client = client.clone();
+        let eventloop_config = config.clone();
+        let eventloop_state = state.clone();
+        let eventloop_metrics = metrics.clone();
+        let mut eventloop_task = tokio::spawn(async move {
+            run_eventloop(
+                eventloop_config,
+                eventloop_state,
+                eventloop_metrics,
+                eventloop_client,
+                eventloop,
+            )
+            .await
+        });
+
+        if let Err(err) = client
             .subscribe(
                 format!("robots/{}/commands", config.robot_id),
                 QoS::AtLeastOnce,
             )
-            .await?;
+            .await
+        {
+            eventloop_task.abort();
+            let _ = eventloop_task.await;
+            return Err(err.into());
+        }
         publish_state(&client, &config, &state).await?;
 
         let mut telemetry_interval = interval(config.telemetry_interval);
@@ -38,43 +58,60 @@ pub(crate) async fn run_robot(
 
         loop {
             tokio::select! {
-                poll_result = eventloop.poll() => {
-                    match poll_result {
-                        Ok(Event::Incoming(Incoming::Publish(publish))) => {
-                            metrics.mqtt_connection_status.set(1.0);
-                            if let Err(err) =
-                                handle_command(&client, &config, &state, &metrics, &publish.payload).await
-                            {
-                                warn!(robot_id = config.robot_id, error = %err, "command handling failed");
-                            }
-                        }
-                        Ok(_) => metrics.mqtt_connection_status.set(1.0),
-                        Err(err) => {
-                            metrics.mqtt_connection_status.set(0.0);
-                            warn!(robot_id = config.robot_id, error = %err, "MQTT disconnected; reconnecting");
-                            sleep(Duration::from_secs(2)).await;
-                            break;
-                        }
+                eventloop_result = &mut eventloop_task => {
+                    match eventloop_result {
+                        Ok(Ok(())) => warn!(robot_id = config.robot_id, "MQTT event loop ended; reconnecting"),
+                        Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "MQTT disconnected; reconnecting"),
+                        Err(err) => warn!(robot_id = config.robot_id, error = %err, "MQTT task failed; reconnecting"),
                     }
+                    break;
                 }
                 _ = telemetry_interval.tick() => {
                     if let Err(err) = publish_telemetry(&client, &config, &state, &metrics).await {
-                        metrics.mqtt_connection_status.set(0.0);
                         warn!(robot_id = config.robot_id, error = %err, "telemetry publish failed; reconnecting");
-                        sleep(Duration::from_secs(2)).await;
                         break;
                     }
                 }
             }
         }
+
+        eventloop_task.abort();
+        let _ = eventloop_task.await;
+        sleep(Duration::from_secs(2)).await;
     }
 }
 
-async fn connect_mqtt(config: &Config) -> anyhow::Result<(AsyncClient, rumqttc::EventLoop)> {
+fn connect_mqtt(config: &Config) -> anyhow::Result<(AsyncClient, rumqttc::EventLoop)> {
     let (host, port) = parse_mqtt_url(&config.mqtt_url)?;
     let mut options = MqttOptions::new(&config.mqtt_client_id, host, port);
     options.set_keep_alive(Duration::from_secs(10));
     Ok(AsyncClient::new(options, 10))
+}
+
+async fn run_eventloop(
+    config: Config,
+    state: Arc<Mutex<RobotState>>,
+    metrics: Arc<Metrics>,
+    client: AsyncClient,
+    mut eventloop: rumqttc::EventLoop,
+) -> anyhow::Result<()> {
+    loop {
+        match eventloop.poll().await {
+            Ok(Event::Incoming(Incoming::Publish(publish))) => {
+                metrics.mqtt_connection_status.set(1.0);
+                if let Err(err) =
+                    handle_command(&client, &config, &state, &metrics, &publish.payload).await
+                {
+                    warn!(robot_id = config.robot_id, error = %err, "command handling failed");
+                }
+            }
+            Ok(_) => metrics.mqtt_connection_status.set(1.0),
+            Err(err) => {
+                metrics.mqtt_connection_status.set(0.0);
+                return Err(err.into());
+            }
+        }
+    }
 }
 
 async fn publish_telemetry(
@@ -195,9 +232,9 @@ async fn handle_command(
         info!(robot_id = config.robot_id, command_id = %command.command_id, "duplicate command ignored");
         return Ok(());
     }
+    guard.apply_command(&command.command_type, &command.payload)?;
     persist_processed_command(&config.processed_commands_path, command.command_id).await?;
     guard.processed_commands.insert(command.command_id);
-    guard.apply_command(&command.command_type, &command.payload)?;
     drop(guard);
 
     metrics.commands_processed.inc();
@@ -212,10 +249,6 @@ async fn handle_command(
     publish_command_result(client, config, &command, "running", "command_running").await?;
     publish_telemetry(client, config, state, metrics).await?;
     sleep(Duration::from_secs(2)).await;
-    {
-        let mut guard = state.lock().await;
-        guard.current_mission = None;
-    }
     publish_state(client, config, state).await?;
     publish_command_result(client, config, &command, "completed", "command_completed").await?;
     Ok(())

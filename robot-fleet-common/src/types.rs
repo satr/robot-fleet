@@ -39,7 +39,9 @@ pub struct StateMessage {
     pub name: String,
     pub status: String,
     pub battery_level: f64,
+    #[serde(default)]
     pub position_x: f64,
+    #[serde(default)]
     pub position_y: f64,
     pub set_velocity: f64,
     pub velocity: f64,
@@ -60,6 +62,7 @@ pub struct TelemetryMessage {
     pub temperature: f64,
     pub position_x: f64,
     pub position_y: f64,
+    #[serde(alias = "speed_cm_s", default)]
     pub velocity_cm_s: f64,
     pub direction_degrees: f64,
     pub payload: Value,
@@ -118,5 +121,51 @@ impl From<&CommandResponse> for RobotCommandMessage {
             command_type: command.command_type.clone(),
             payload: command.payload.clone(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StateMessage, TelemetryMessage};
+    use chrono::Utc;
+    use serde_json::json;
+
+    #[test]
+    fn state_message_defaults_missing_coordinates() {
+        let message: StateMessage = serde_json::from_value(json!({
+            "robot_id": "robot-01",
+            "name": "Loader One",
+            "status": "online",
+            "battery_level": 87.5,
+            "set_velocity": 1.5,
+            "velocity": 1.0,
+            "direction_degrees": 90.0,
+            "stop": false,
+            "current_mission": "move",
+            "software_version": "0.1.0",
+            "recorded_at": Utc::now()
+        }))
+        .expect("state message");
+
+        assert_eq!(message.position_x, 0.0);
+        assert_eq!(message.position_y, 0.0);
+    }
+
+    #[test]
+    fn telemetry_message_accepts_legacy_velocity_field() {
+        let message: TelemetryMessage = serde_json::from_value(json!({
+            "robot_id": "robot-01",
+            "recorded_at": Utc::now(),
+            "battery_level": 87.5,
+            "temperature": 22.0,
+            "position_x": 10.0,
+            "position_y": 5.0,
+            "speed_cm_s": 1.25,
+            "direction_degrees": 90.0,
+            "payload": {}
+        }))
+        .expect("telemetry message");
+
+        assert_eq!(message.velocity_cm_s, 1.25);
     }
 }

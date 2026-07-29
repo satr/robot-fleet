@@ -214,7 +214,7 @@ pub(crate) async fn upsert_robot_state(
 ) -> anyhow::Result<()> {
     sqlx::query(
         "INSERT INTO robots (robot_id, name, status, battery_level, position_x, position_y, set_velocity, velocity, direction_degrees, stop, target_position_x, target_position_y, current_mission, last_seen_at, software_version, updated_at)
-         VALUES ($1, $2, 'online', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now(), $14, now())
+         VALUES ($1, $2, 'online', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13, now())
          ON CONFLICT (robot_id) DO UPDATE
          SET name = EXCLUDED.name,
             status = 'online',
@@ -313,6 +313,107 @@ pub(crate) async fn apply_command_result(
             "unknown command status"
         ),
     }
+
+    if let Some(projection) = command_state_projection(message) {
+        apply_command_state_projection(state, &message.robot_id, projection).await?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+enum CommandStateProjection {
+    SetVelocity(f64),
+    Move {
+        target_position_x: Option<f64>,
+        target_position_y: Option<f64>,
+    },
+    Stop(bool),
+}
+
+fn command_state_projection(message: &CommandResultMessage) -> Option<CommandStateProjection> {
+    if !matches!(
+        message.status.as_str(),
+        "acknowledged" | "running" | "completed"
+    ) {
+        return None;
+    }
+
+    let command_type = message.payload.get("command_type")?.as_str()?;
+    let payload = message.payload.get("payload")?;
+
+    match command_type {
+        "set_velocity" => payload
+            .get("set_velocity")
+            .and_then(Value::as_f64)
+            .map(CommandStateProjection::SetVelocity),
+        "move" => Some(CommandStateProjection::Move {
+            target_position_x: payload.get("target_position_x").and_then(Value::as_f64),
+            target_position_y: payload.get("target_position_y").and_then(Value::as_f64),
+        }),
+        "stop" => payload
+            .as_bool()
+            .or_else(|| payload.get("stop").and_then(Value::as_bool))
+            .map(CommandStateProjection::Stop),
+        _ => None,
+    }
+}
+
+async fn apply_command_state_projection(
+    state: &AppState,
+    robot_id: &str,
+    projection: CommandStateProjection,
+) -> Result<(), sqlx::Error> {
+    match projection {
+        CommandStateProjection::SetVelocity(set_velocity) => {
+            sqlx::query(
+                "UPDATE robots
+                 SET set_velocity = $2,
+                     updated_at = now()
+                 WHERE robot_id = $1",
+            )
+            .bind(robot_id)
+            .bind(set_velocity)
+            .execute(&state.pool)
+            .await?;
+        }
+        CommandStateProjection::Move {
+            target_position_x,
+            target_position_y,
+        } => {
+            if let (Some(target_position_x), Some(target_position_y)) =
+                (target_position_x, target_position_y)
+            {
+                sqlx::query(
+                    "UPDATE robots
+                     SET target_position_x = $2,
+                         target_position_y = $3,
+                         current_mission = 'move',
+                         stop = FALSE,
+                         updated_at = now()
+                     WHERE robot_id = $1",
+                )
+                .bind(robot_id)
+                .bind(target_position_x)
+                .bind(target_position_y)
+                .execute(&state.pool)
+                .await?;
+            }
+        }
+        CommandStateProjection::Stop(stop) => {
+            sqlx::query(
+                "UPDATE robots
+                 SET stop = $2,
+                     velocity = CASE WHEN $2 THEN 0 ELSE velocity END,
+                     updated_at = now()
+                 WHERE robot_id = $1",
+            )
+            .bind(robot_id)
+            .bind(stop)
+            .execute(&state.pool)
+            .await?;
+        }
+    }
+
     Ok(())
 }
 
@@ -437,7 +538,11 @@ fn command_from_row(row: sqlx::postgres::PgRow) -> CommandResponse {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use robot_fleet_common::status::robot_status_from_last_seen;
+    use robot_fleet_common::{status::robot_status_from_last_seen, types::CommandResultMessage};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::{command_state_projection, CommandStateProjection};
 
     #[test]
     fn robot_status_is_derived_from_last_seen_age() {
@@ -461,5 +566,34 @@ mod tests {
             robot_status_from_last_seen(now, Some(now - chrono::Duration::seconds(16))),
             "offline"
         );
+    }
+
+    #[test]
+    fn command_state_projection_is_derived_from_command_result_payload() {
+        let message = CommandResultMessage {
+            command_id: Uuid::new_v4(),
+            robot_id: "robot-01".into(),
+            status: "running".into(),
+            event_type: "command_running".into(),
+            payload: json!({
+                "command_type": "move",
+                "payload": {
+                    "target_position_x": 10.0,
+                    "target_position_y": 5.0
+                }
+            }),
+            occurred_at: Utc::now(),
+        };
+
+        match command_state_projection(&message) {
+            Some(CommandStateProjection::Move {
+                target_position_x,
+                target_position_y,
+            }) => {
+                assert_eq!(target_position_x, Some(10.0));
+                assert_eq!(target_position_y, Some(5.0));
+            }
+            other => panic!("unexpected projection: {other:?}"),
+        }
     }
 }

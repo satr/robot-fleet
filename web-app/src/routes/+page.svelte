@@ -221,20 +221,20 @@
               <dd>{robot.battery_level.toFixed(1)}%</dd>
             </div>
             <div>
-              <dt>Position</dt>
+              <dt>Current position</dt>
               <dd>x {coordinate(robot.position_x)} cm, y {coordinate(robot.position_y)} cm</dd>
             </div>
             <div>
-              <dt>Target</dt>
+              <dt>Current velocity</dt>
+              <dd>{velocity(robot.velocity)}</dd>
+            </div>
+            <div>
+              <dt>Target position</dt>
               <dd>x {coordinate(robot.target_position_x)} cm, y {coordinate(robot.target_position_y)} cm</dd>
             </div>
             <div>
               <dt>Set velocity</dt>
               <dd>{velocity(robot.set_velocity)}</dd>
-            </div>
-            <div>
-              <dt>Velocity</dt>
-              <dd>{velocity(robot.velocity)}</dd>
             </div>
             <div>
               <dt>Direction</dt>
@@ -273,6 +273,7 @@
                 on:input={(event) => updateMoveForm(robot.robot_id, 'target_position_y', (event.currentTarget as HTMLInputElement).value)}
               />
             </label>
+            <button disabled={pendingAction !== ''} on:click={() => sendMove(robot)}>Move</button>
             <label>
               <span>Set velocity</span>
               <input
@@ -284,7 +285,6 @@
               />
             </label>
             <button disabled={pendingAction !== ''} on:click={() => sendSetVelocity(robot)}>Set velocity</button>
-            <button disabled={pendingAction !== ''} on:click={() => sendMove(robot)}>Move</button>
           </div>
 
           <div class="controls" aria-label={`Controls for ${robot.name}`}>
