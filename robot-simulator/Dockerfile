@@ -1,6 +1,7 @@
 FROM rust:1-bookworm AS builder
 WORKDIR /app
 COPY Cargo.toml Cargo.lock* ./
+COPY robot-fleet-common ./robot-fleet-common
 COPY backend ./backend
 COPY robot-simulator ./robot-simulator
 RUN cargo build --release -p robot-simulator

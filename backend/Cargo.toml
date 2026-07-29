@@ -12,6 +12,7 @@ chrono.workspace = true
 dotenvy.workspace = true
 futures-util.workspace = true
 prometheus.workspace = true
+robot-fleet-common.workspace = true
 rumqttc.workspace = true
 serde.workspace = true
 serde_json.workspace = true

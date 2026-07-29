@@ -27,6 +27,7 @@ Current implementation: the backend subscribes to robot MQTT telemetry/state/res
 
 ```text
 backend/                 Rust Axum API, SQLx migrations, MQTT ingestion
+robot-fleet-common/      Shared Rust domain types and helpers
 web-app/                 SvelteKit fleet UI
 robot-simulator/         Rust MQTT robot simulator
 infrastructure/mqtt/     Mosquitto config
