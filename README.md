@@ -129,6 +129,10 @@ make web-run
 make web-build
 make web-check
 make robot-run ROBOT_ID=robot-local
+make robot1-down
+make robot2-down
+make robot3-down
+make robots-down
 make dev
 make build
 make test

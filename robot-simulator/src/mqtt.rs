@@ -85,8 +85,6 @@ async fn publish_telemetry(
 ) -> anyhow::Result<()> {
     let mut guard = state.lock().await;
     guard.battery_level = (guard.battery_level - 0.2).max(0.0);
-    guard.position_x += rand::thread_rng().gen_range(-0.5..=0.5);
-    guard.position_y += rand::thread_rng().gen_range(-0.5..=0.5);
     guard.online = rand::thread_rng().gen_bool(0.98);
 
     let now = Utc::now();
@@ -182,6 +180,7 @@ async fn handle_command(
     persist_processed_command(&config.processed_commands_path, command.command_id).await?;
     guard.processed_commands.insert(command.command_id);
     guard.current_mission = Some(command.command_type.clone());
+    guard.apply_command(&command.command_type, &command.payload)?;
     drop(guard);
 
     metrics.commands_processed.inc();
@@ -194,11 +193,13 @@ async fn handle_command(
     )
     .await?;
     publish_command_result(client, config, &command, "running", "command_running").await?;
+    publish_telemetry(client, config, state, metrics).await?;
     sleep(Duration::from_secs(2)).await;
     {
         let mut guard = state.lock().await;
         guard.current_mission = None;
     }
+    publish_state(client, config, state).await?;
     publish_command_result(client, config, &command, "completed", "command_completed").await?;
     Ok(())
 }

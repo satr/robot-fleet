@@ -3,6 +3,7 @@
 ROBOT_ID ?= robot-local
 ROBOT_NAME ?= Local Robot
 TELEMETRY_INTERVAL_SECONDS ?= 5
+ROBOT_STATE_INTERVAL_SECONDS ?= 1
 MQTT_URL ?= mqtt://localhost:1883
 DATABASE_URL ?= postgres://robot_fleet:robot_fleet@localhost:5432/robot_fleet
 KAFKA_BROKERS ?= localhost:9092
@@ -12,7 +13,7 @@ WEB_PORT ?= 5173
 PUBLIC_BACKEND_HTTP_URL ?= http://localhost:8089
 PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
 
-.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-test web-run web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-up dev build test docker-build docker-up docker-down docker-logs clean
+.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-test web-run web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-build docker-up docker-down docker-logs clean
 
 help:
 	@echo "Robot Fleet commands:"
@@ -26,6 +27,10 @@ help:
 	@echo "  make web-build      Build SvelteKit web app"
 	@echo "  make robot-run      Run one simulator locally (set ROBOT_ID=robot-local)"
 	@echo "  make robots-run     Run three simulators locally"
+	@echo "  make robot1-down    Stop robot-01 container"
+	@echo "  make robot2-down    Stop robot-02 container"
+	@echo "  make robot3-down    Stop robot-03 container"
+	@echo "  make robots-down    Stop all robot containers"
 	@echo "  make dev            Start infrastructure, then run backend locally"
 	@echo "  make build          Build Rust workspace"
 	@echo "  make test           Run Rust tests"
@@ -67,16 +72,16 @@ web-check:
 	cd web-app && npm run check
 
 robot-dev:
-	ROBOT_ID="$(ROBOT_ID)" ROBOT_NAME="$(ROBOT_NAME)" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="$(PROCESSED_COMMANDS_PATH)" cargo run -p robot-simulator
+	ROBOT_ID="$(ROBOT_ID)" ROBOT_NAME="$(ROBOT_NAME)" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" ROBOT_STATE_INTERVAL_SECONDS="$(ROBOT_STATE_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="$(PROCESSED_COMMANDS_PATH)" cargo run -p robot-simulator
 
 robot1-dev:
-	ROBOT_ID="robot-01" ROBOT_NAME="Robot 01" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-01/processed_commands.txt" cargo run -p robot-simulator
+	ROBOT_ID="robot-01" ROBOT_NAME="Robot 01" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" ROBOT_STATE_INTERVAL_SECONDS="$(ROBOT_STATE_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-01/processed_commands.txt" cargo run -p robot-simulator
 
 robot2-dev:
-	ROBOT_ID="robot-02" ROBOT_NAME="Robot 02" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-02/processed_commands.txt" cargo run -p robot-simulator
+	ROBOT_ID="robot-02" ROBOT_NAME="Robot 02" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" ROBOT_STATE_INTERVAL_SECONDS="$(ROBOT_STATE_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-02/processed_commands.txt" cargo run -p robot-simulator
 
 robot3-dev:
-	ROBOT_ID="robot-03" ROBOT_NAME="Robot 03" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-03/processed_commands.txt" cargo run -p robot-simulator
+	ROBOT_ID="robot-03" ROBOT_NAME="Robot 03" MQTT_URL="$(MQTT_URL)" TELEMETRY_INTERVAL_SECONDS="$(TELEMETRY_INTERVAL_SECONDS)" ROBOT_STATE_INTERVAL_SECONDS="$(ROBOT_STATE_INTERVAL_SECONDS)" RUST_LOG="$(RUST_LOG)" PROCESSED_COMMANDS_PATH="data/robots/robot-03/processed_commands.txt" cargo run -p robot-simulator
 
 robots-dev:
 	$(MAKE) robot1-dev &
@@ -95,6 +100,18 @@ robot3-up:
 
 robots-up:
 	docker compose up -d robot-01 robot-02 robot-03
+
+robot1-down:
+	docker compose stop robot-01
+
+robot2-down:
+	docker compose stop robot-02
+
+robot3-down:
+	docker compose stop robot-03
+
+robots-down:
+	docker compose stop robot-01 robot-02 robot-03
 
 dev: infra-up
 	$(MAKE) backend-run &

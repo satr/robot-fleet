@@ -130,6 +130,7 @@ services:
       ROBOT_NAME: Loader One
       MQTT_URL: mqtt://mqtt:1883
       TELEMETRY_INTERVAL_SECONDS: 5
+      ROBOT_STATE_INTERVAL_SECONDS: 1
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ./data/robots/robot-01:/state
@@ -148,6 +149,7 @@ services:
       ROBOT_NAME: Picker Two
       MQTT_URL: mqtt://mqtt:1883
       TELEMETRY_INTERVAL_SECONDS: 5
+      ROBOT_STATE_INTERVAL_SECONDS: 1
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ./data/robots/robot-02:/state
@@ -166,6 +168,7 @@ services:
       ROBOT_NAME: Scout Three
       MQTT_URL: mqtt://mqtt:1883
       TELEMETRY_INTERVAL_SECONDS: 5
+      ROBOT_STATE_INTERVAL_SECONDS: 1
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
       - ./data/robots/robot-03:/state

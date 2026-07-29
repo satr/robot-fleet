@@ -10,6 +10,7 @@ pub(crate) struct Config {
     pub(crate) mqtt_client_id: String,
     pub(crate) mqtt_url: String,
     pub(crate) telemetry_interval: Duration,
+    pub(crate) robot_state_interval: Duration,
     pub(crate) metrics_port: u16,
     pub(crate) processed_commands_path: PathBuf,
 }
@@ -30,6 +31,11 @@ impl Config {
                 env_or("TELEMETRY_INTERVAL_SECONDS", "5")
                     .parse()
                     .context("TELEMETRY_INTERVAL_SECONDS must be an integer")?,
+            ),
+            robot_state_interval: Duration::from_secs(
+                env_or("ROBOT_STATE_INTERVAL_SECONDS", "1")
+                    .parse()
+                    .context("ROBOT_STATE_INTERVAL_SECONDS must be an integer")?,
             ),
             metrics_port: env_or("METRICS_PORT", "9100")
                 .parse()

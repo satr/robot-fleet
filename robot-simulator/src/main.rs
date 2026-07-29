@@ -28,5 +28,9 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(Mutex::new(RobotState::new(processed_commands)));
 
     tokio::spawn(run_metrics_server(metrics.clone(), config.metrics_port));
+    tokio::spawn(RobotState::update_state(
+        state.clone(),
+        config.robot_state_interval,
+    ));
     run_robot(config, state, metrics).await
 }
