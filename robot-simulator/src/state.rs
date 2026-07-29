@@ -13,11 +13,12 @@ pub(crate) struct RobotState {
     pub(crate) battery_level: f64,
     pub(crate) position_x: f64,
     pub(crate) position_y: f64,
-    pub(crate) motion_x: f64,
-    pub(crate) motion_y: f64,
-    pub(crate) velocity_cm_s: f64,
+    pub(crate) set_velocity: f64,
+    pub(crate) velocity: f64,
     pub(crate) direction_degrees: f64,
-    pub(crate) is_running: bool,
+    pub(crate) stop: bool,
+    pub(crate) target_position_x: Option<f64>,
+    pub(crate) target_position_y: Option<f64>,
     pub(crate) online: bool,
     pub(crate) current_mission: Option<String>,
     pub(crate) software_version: String,
@@ -32,11 +33,12 @@ impl RobotState {
             battery_level: 100.0,
             position_x: 0.0,
             position_y: 0.0,
-            motion_x: 0.0,
-            motion_y: 0.0,
-            velocity_cm_s: 0.0,
+            set_velocity: 1.0,
+            velocity: 0.0,
             direction_degrees: 0.0,
-            is_running: false,
+            stop: false,
+            target_position_x: None,
+            target_position_y: None,
             online: true,
             current_mission: None,
             software_version: "0.1.0".into(),
@@ -48,23 +50,21 @@ impl RobotState {
     pub(crate) fn apply_command(&mut self, command_type: &str, payload: &Value) -> Result<()> {
         match command_type {
             "move" => {
-                let (motion_x, motion_y) = parse_move_payload(payload)?;
-                self.position_x += motion_x;
-                self.position_y += motion_y;
-                self.motion_x = motion_x;
-                self.motion_y = motion_y;
+                let (target_position_x, target_position_y) = parse_move_payload(payload)?;
+                self.target_position_x = Some(target_position_x);
+                self.target_position_y = Some(target_position_y);
+                self.stop = false;
+                self.current_mission = Some("move".into());
                 self.update_motion_state();
             }
-            "run" => {
-                if self.motion_x == 0.0 && self.motion_y == 0.0 {
-                    self.motion_x = 1.0;
-                    self.motion_y = 0.0;
-                }
-                self.is_running = true;
+            "set_velocity" => {
+                let set_velocity = parse_set_velocity_payload(payload)?;
+                self.set_velocity = set_velocity;
                 self.update_motion_state();
             }
             "stop" => {
-                self.is_running = false;
+                let stop = parse_stop_payload(payload)?;
+                self.stop = stop;
                 self.update_motion_state();
             }
             _ => {}
@@ -73,23 +73,76 @@ impl RobotState {
     }
 
     fn advance_motion(&mut self) {
-        if self.is_running {
-            self.position_x += self.motion_x;
-            self.position_y += self.motion_y;
+        if self.stop {
+            self.velocity = 0.0;
+            return;
+        }
+
+        let Some(target_position_x) = self.target_position_x else {
+            self.velocity = 0.0;
+            return;
+        };
+        let Some(target_position_y) = self.target_position_y else {
+            self.velocity = 0.0;
+            return;
+        };
+
+        let delta_x = target_position_x - self.position_x;
+        let delta_y = target_position_y - self.position_y;
+        let distance = (delta_x.powi(2) + delta_y.powi(2)).sqrt();
+        if distance <= f64::EPSILON || self.set_velocity <= 0.0 {
+            self.position_x = target_position_x;
+            self.position_y = target_position_y;
+            self.velocity = 0.0;
+            self.target_position_x = None;
+            self.target_position_y = None;
+            self.current_mission = None;
+            return;
+        }
+
+        let max_step = self.set_velocity * self.motion_tick_seconds;
+        let step = distance.min(max_step);
+        let scale = step / distance;
+        self.position_x += delta_x * scale;
+        self.position_y += delta_y * scale;
+        self.velocity = step / self.motion_tick_seconds;
+        self.direction_degrees = delta_y.atan2(delta_x).to_degrees().rem_euclid(360.0);
+
+        if step >= distance {
+            self.position_x = target_position_x;
+            self.position_y = target_position_y;
+            self.velocity = 0.0;
+            self.target_position_x = None;
+            self.target_position_y = None;
+            self.current_mission = None;
         }
     }
 
     fn update_motion_state(&mut self) {
-        let motion_magnitude = (self.motion_x.powi(2) + self.motion_y.powi(2)).sqrt();
-        self.velocity_cm_s = if self.is_running {
-            motion_magnitude / self.motion_tick_seconds
-        } else {
-            0.0
+        let Some(target_position_x) = self.target_position_x else {
+            self.velocity = 0.0;
+            return;
         };
-        self.direction_degrees = if motion_magnitude == 0.0 {
+        let Some(target_position_y) = self.target_position_y else {
+            self.velocity = 0.0;
+            return;
+        };
+
+        let delta_x = target_position_x - self.position_x;
+        let delta_y = target_position_y - self.position_y;
+        let distance = (delta_x.powi(2) + delta_y.powi(2)).sqrt();
+        if distance <= f64::EPSILON {
+            self.velocity = 0.0;
+            self.target_position_x = None;
+            self.target_position_y = None;
+            self.current_mission = None;
+            return;
+        }
+        self.direction_degrees = delta_y.atan2(delta_x).to_degrees().rem_euclid(360.0);
+        self.velocity = if self.stop || self.set_velocity <= 0.0 {
             0.0
         } else {
-            self.motion_y.atan2(self.motion_x).to_degrees().rem_euclid(360.0)
+            self.set_velocity
         };
     }
 
@@ -106,24 +159,36 @@ impl RobotState {
 }
 
 fn parse_move_payload(payload: &Value) -> Result<(f64, f64)> {
-    let axis = payload
-        .get("axis")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("move command payload must include axis"))?;
-    let delta = payload
-        .get("delta")
+    let target_position_x = payload
+        .get("target_position_x")
         .and_then(Value::as_f64)
-        .ok_or_else(|| anyhow!("move command payload must include numeric delta"))?;
+        .ok_or_else(|| anyhow!("move command payload must include numeric target_position_x"))?;
+    let target_position_y = payload
+        .get("target_position_y")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| anyhow!("move command payload must include numeric target_position_y"))?;
 
-    if delta == 0.0 {
-        return Err(anyhow!("move command delta must not be zero"));
+    Ok((target_position_x, target_position_y))
+}
+
+fn parse_set_velocity_payload(payload: &Value) -> Result<f64> {
+    let set_velocity = payload
+        .get("set_velocity")
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0);
+
+    if !(0.01..=10.0).contains(&set_velocity) {
+        return Err(anyhow!("set_velocity must be between 0.01 and 10.0"));
     }
 
-    match axis {
-        "x" => Ok((delta, 0.0)),
-        "y" => Ok((0.0, delta)),
-        other => Err(anyhow!("unsupported move axis: {other}")),
-    }
+    Ok(set_velocity)
+}
+
+fn parse_stop_payload(payload: &Value) -> Result<bool> {
+    payload
+        .as_bool()
+        .or_else(|| payload.get("stop").and_then(Value::as_bool))
+        .ok_or_else(|| anyhow!("stop command payload must include boolean stop"))
 }
 
 #[cfg(test)]
@@ -145,56 +210,94 @@ mod tests {
     }
 
     #[test]
-    fn move_command_updates_position_and_motion() {
+    fn move_command_sets_target_and_uses_velocity() {
         let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
-
         state
-            .apply_command("move", &json!({ "axis": "x", "delta": 1 }))
+            .apply_command("set_velocity", &json!({ "set_velocity": 2 }))
+            .expect("set_velocity command");
+        state
+            .apply_command(
+                "move",
+                &json!({
+                    "target_position_x": 10,
+                    "target_position_y": 5
+                }),
+            )
             .expect("move command");
 
+        assert_eq!(state.target_position_x, Some(10.0));
+        assert_eq!(state.target_position_y, Some(5.0));
+        assert_eq!(state.set_velocity, 2.0);
+        assert!(!state.stop);
+        assert_eq!(state.current_mission.as_deref(), Some("move"));
+        assert_eq!(state.velocity, 2.0);
+    }
+
+    #[test]
+    fn set_velocity_command_updates_value_and_respects_bounds() {
+        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        state
+            .apply_command("set_velocity", &json!({ "set_velocity": 1.5 }))
+            .expect("set_velocity command");
+        assert_eq!(state.set_velocity, 1.5);
+        assert_eq!(state.velocity, 0.0);
+    }
+
+    #[test]
+    fn stop_command_pauses_and_resumes_motion() {
+        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        state
+            .apply_command("set_velocity", &json!({ "set_velocity": 4 }))
+            .expect("set_velocity command");
+        state
+            .apply_command(
+                "move",
+                &json!({
+                    "target_position_x": 10,
+                    "target_position_y": 0
+                }),
+            )
+            .expect("move command");
+
+        state
+            .apply_command("stop", &json!({ "stop": true }))
+            .expect("stop command");
+        assert!(state.stop);
+        assert_eq!(state.velocity, 0.0);
+
+        state
+            .apply_command("stop", &json!({ "stop": false }))
+            .expect("resume command");
+        assert!(!state.stop);
+        assert_eq!(state.velocity, 4.0);
+    }
+
+    #[test]
+    fn motion_advance_moves_toward_target() {
+        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        state
+            .apply_command("set_velocity", &json!({ "set_velocity": 1 }))
+            .expect("set_velocity command");
+        state
+            .apply_command(
+                "move",
+                &json!({
+                    "target_position_x": 2,
+                    "target_position_y": 0
+                }),
+            )
+            .expect("move command");
+
+        state.advance_motion();
         assert_eq!(state.position_x, 1.0);
         assert_eq!(state.position_y, 0.0);
-        assert_eq!(state.motion_x, 1.0);
-        assert_eq!(state.motion_y, 0.0);
-        assert_eq!(state.velocity_cm_s, 0.0);
-        assert_eq!(state.direction_degrees, 0.0);
-        assert!(!state.is_running);
-    }
-
-    #[test]
-    fn run_command_advances_using_last_motion() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(2));
-
-        state
-            .apply_command("move", &json!({ "axis": "y", "delta": -1 }))
-            .expect("move command");
-        state.apply_command("run", &json!({})).expect("run command");
-
-        assert!(state.is_running);
-        assert_eq!(state.position_x, 0.0);
-        assert_eq!(state.position_y, -1.0);
-        assert_eq!(state.velocity_cm_s, 0.5);
-        assert_eq!(state.direction_degrees, 270.0);
+        assert_eq!(state.velocity, 1.0);
 
         state.advance_motion();
-        assert_eq!(state.position_y, -2.0);
-    }
-
-    #[test]
-    fn stop_command_halts_motion() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
-
-        state
-            .apply_command("move", &json!({ "axis": "x", "delta": 1 }))
-            .expect("move command");
-        state.apply_command("run", &json!({})).expect("run command");
-        state.apply_command("stop", &json!({})).expect("stop command");
-
-        let position_x = state.position_x;
-        state.advance_motion();
-
-        assert!(!state.is_running);
-        assert_eq!(state.position_x, position_x);
-        assert_eq!(state.velocity_cm_s, 0.0);
+        assert_eq!(state.position_x, 2.0);
+        assert_eq!(state.position_y, 0.0);
+        assert_eq!(state.velocity, 0.0);
+        assert_eq!(state.target_position_x, None);
+        assert_eq!(state.target_position_y, None);
     }
 }

@@ -95,7 +95,7 @@ async fn publish_telemetry(
         temperature: rand::thread_rng().gen_range(20.0..=45.0),
         position_x: guard.position_x,
         position_y: guard.position_y,
-        velocity_cm_s: guard.velocity_cm_s,
+        velocity_cm_s: guard.velocity,
         direction_degrees: guard.direction_degrees,
         payload: json!({ "online": guard.online }),
     };
@@ -106,8 +106,12 @@ async fn publish_telemetry(
         battery_level: guard.battery_level,
         position_x: guard.position_x,
         position_y: guard.position_y,
-        velocity_cm_s: guard.velocity_cm_s,
+        set_velocity: guard.set_velocity,
+        velocity: guard.velocity,
         direction_degrees: guard.direction_degrees,
+        stop: guard.stop,
+        target_position_x: guard.target_position_x,
+        target_position_y: guard.target_position_y,
         current_mission: guard.current_mission.clone(),
         software_version: guard.software_version.clone(),
         recorded_at: now,
@@ -147,8 +151,12 @@ async fn publish_state(
         battery_level: guard.battery_level,
         position_x: guard.position_x,
         position_y: guard.position_y,
-        velocity_cm_s: guard.velocity_cm_s,
+        set_velocity: guard.set_velocity,
+        velocity: guard.velocity,
         direction_degrees: guard.direction_degrees,
+        stop: guard.stop,
+        target_position_x: guard.target_position_x,
+        target_position_y: guard.target_position_y,
         current_mission: guard.current_mission.clone(),
         software_version: guard.software_version.clone(),
         recorded_at: Utc::now(),
@@ -189,7 +197,6 @@ async fn handle_command(
     }
     persist_processed_command(&config.processed_commands_path, command.command_id).await?;
     guard.processed_commands.insert(command.command_id);
-    guard.current_mission = Some(command.command_type.clone());
     guard.apply_command(&command.command_type, &command.payload)?;
     drop(guard);
 

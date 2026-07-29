@@ -21,8 +21,12 @@ const ROBOT_VIEW_SELECT: &str = "SELECT
      r.battery_level,
      r.position_x,
      r.position_y,
-     r.velocity_cm_s,
+     r.set_velocity,
+     r.velocity,
      r.direction_degrees,
+     r.stop,
+     r.target_position_x,
+     r.target_position_y,
      r.current_mission,
      r.last_seen_at,
      r.software_version,
@@ -173,14 +177,14 @@ pub(crate) async fn upsert_robot_from_telemetry(
     message: &TelemetryMessage,
 ) -> anyhow::Result<()> {
     sqlx::query(
-        "INSERT INTO robots (robot_id, name, status, battery_level, position_x, position_y, velocity_cm_s, direction_degrees, last_seen_at, software_version, updated_at)
+        "INSERT INTO robots (robot_id, name, status, battery_level, position_x, position_y, velocity, direction_degrees, last_seen_at, software_version, updated_at)
          VALUES ($1, $1, 'online', $2, $3, $4, $5, $6, now(), 'unknown', now())
          ON CONFLICT (robot_id) DO UPDATE
          SET status = 'online',
             battery_level = EXCLUDED.battery_level,
             position_x = EXCLUDED.position_x,
             position_y = EXCLUDED.position_y,
-            velocity_cm_s = EXCLUDED.velocity_cm_s,
+            velocity = EXCLUDED.velocity,
             direction_degrees = EXCLUDED.direction_degrees,
             last_seen_at = now(),
             updated_at = now()",
@@ -209,16 +213,20 @@ pub(crate) async fn upsert_robot_state(
     message: &StateMessage,
 ) -> anyhow::Result<()> {
     sqlx::query(
-        "INSERT INTO robots (robot_id, name, status, battery_level, position_x, position_y, velocity_cm_s, direction_degrees, current_mission, last_seen_at, software_version, updated_at)
-         VALUES ($1, $2, 'online', $3, $4, $5, $6, $7, $8, now(), $9, now())
+        "INSERT INTO robots (robot_id, name, status, battery_level, position_x, position_y, set_velocity, velocity, direction_degrees, stop, target_position_x, target_position_y, current_mission, last_seen_at, software_version, updated_at)
+         VALUES ($1, $2, 'online', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now(), $14, now())
          ON CONFLICT (robot_id) DO UPDATE
          SET name = EXCLUDED.name,
             status = 'online',
             battery_level = EXCLUDED.battery_level,
             position_x = EXCLUDED.position_x,
             position_y = EXCLUDED.position_y,
-            velocity_cm_s = EXCLUDED.velocity_cm_s,
+            set_velocity = EXCLUDED.set_velocity,
+            velocity = EXCLUDED.velocity,
             direction_degrees = EXCLUDED.direction_degrees,
+            stop = EXCLUDED.stop,
+            target_position_x = EXCLUDED.target_position_x,
+            target_position_y = EXCLUDED.target_position_y,
             current_mission = EXCLUDED.current_mission,
             last_seen_at = now(),
             software_version = EXCLUDED.software_version,
@@ -229,8 +237,12 @@ pub(crate) async fn upsert_robot_state(
     .bind(message.battery_level)
     .bind(message.position_x)
     .bind(message.position_y)
-    .bind(message.velocity_cm_s)
+    .bind(message.set_velocity)
+    .bind(message.velocity)
     .bind(message.direction_degrees)
+    .bind(message.stop)
+    .bind(message.target_position_x)
+    .bind(message.target_position_y)
     .bind(&message.current_mission)
     .bind(&message.software_version)
     .execute(&state.pool)
@@ -240,7 +252,7 @@ pub(crate) async fn upsert_robot_state(
         &message.robot_id,
         message.position_x,
         message.position_y,
-        message.velocity_cm_s,
+        message.velocity,
         message.direction_degrees,
     );
     Ok(())
@@ -332,7 +344,7 @@ pub(crate) async fn refresh_robot_status_metrics(state: &AppState) -> Result<(),
 
 pub(crate) async fn refresh_robot_motion_metrics(state: &AppState) -> Result<(), sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT robot_id, position_x, position_y, velocity_cm_s, direction_degrees
+        "SELECT robot_id, position_x, position_y, velocity, direction_degrees
          FROM robots",
     )
     .fetch_all(&state.pool)
@@ -342,14 +354,14 @@ pub(crate) async fn refresh_robot_motion_metrics(state: &AppState) -> Result<(),
         let robot_id: String = row.get("robot_id");
         let position_x: f64 = row.get("position_x");
         let position_y: f64 = row.get("position_y");
-        let velocity_cm_s: f64 = row.get("velocity_cm_s");
+        let velocity: f64 = row.get("velocity");
         let direction_degrees: f64 = row.get("direction_degrees");
         sync_motion_metrics(
             &state.metrics,
             &robot_id,
             position_x,
             position_y,
-            velocity_cm_s,
+            velocity,
             direction_degrees,
         );
     }
@@ -362,7 +374,7 @@ fn sync_motion_metrics(
     robot_id: &str,
     position_x: f64,
     position_y: f64,
-    velocity_cm_s: f64,
+    velocity: f64,
     direction_degrees: f64,
 ) {
     metrics
@@ -376,7 +388,7 @@ fn sync_motion_metrics(
     metrics
         .robot_velocity_cm_s
         .with_label_values(&[robot_id])
-        .set(velocity_cm_s);
+        .set(velocity);
     metrics
         .robot_direction_degrees
         .with_label_values(&[robot_id])
@@ -392,8 +404,12 @@ fn robot_from_row(row: sqlx::postgres::PgRow) -> Robot {
         battery_level: row.get("battery_level"),
         position_x: row.get("position_x"),
         position_y: row.get("position_y"),
-        velocity_cm_s: row.get("velocity_cm_s"),
+        set_velocity: row.get("set_velocity"),
+        velocity: row.get("velocity"),
         direction_degrees: row.get("direction_degrees"),
+        stop: row.get("stop"),
+        target_position_x: row.get("target_position_x"),
+        target_position_y: row.get("target_position_y"),
         current_mission: row.get("current_mission"),
         current_command: row.get("current_command"),
         current_command_status: row.get("current_command_status"),

@@ -121,6 +121,7 @@ async fn create_command(
     if request.command_type.trim().is_empty() {
         return Err(ApiError::BadRequest("command_type is required".into()));
     }
+    validate_command_request(&request)?;
 
     db::insert_placeholder_robot(&state.pool, &robot_id).await?;
     let command = db::create_command(
@@ -142,6 +143,59 @@ async fn create_command(
     state.metrics.commands_created.inc();
     app::broadcast_robot_update(&state, &robot_id).await;
     Ok(Json(command))
+}
+
+fn validate_command_request(request: &CreateCommandRequest) -> Result<(), ApiError> {
+    match request.command_type.as_str() {
+        "move" => {
+            let Some(_) = request
+                .payload
+                .get("target_position_x")
+                .and_then(|value| value.as_f64())
+            else {
+                return Err(ApiError::BadRequest(
+                    "move command requires numeric target_position_x and target_position_y".into(),
+                ));
+            };
+            let Some(_) = request
+                .payload
+                .get("target_position_y")
+                .and_then(|value| value.as_f64())
+            else {
+                return Err(ApiError::BadRequest(
+                    "move command requires numeric target_position_x and target_position_y".into(),
+                ));
+            };
+        }
+        "set_velocity" => {
+            let set_velocity = request
+                .payload
+                .get("set_velocity")
+                .and_then(|value| value.as_f64())
+                .unwrap_or(1.0);
+            if !(0.01..=10.0).contains(&set_velocity) {
+                return Err(ApiError::BadRequest(
+                    "set_velocity must be between 0.01 and 10.0".into(),
+                ));
+            }
+        }
+        "stop" => {
+            let stop = request.payload.as_bool().or_else(|| {
+                request
+                    .payload
+                    .get("stop")
+                    .and_then(|value| value.as_bool())
+            });
+            if stop.is_none() {
+                return Err(ApiError::BadRequest(
+                    "stop command requires boolean stop".into(),
+                ));
+            }
+        }
+        _ => {}
+    }
+
+    Ok(())
 }
 
 async fn list_commands(
@@ -242,11 +296,32 @@ mod tests {
     #[test]
     fn command_creation_requires_type() {
         let request = CreateCommandRequest {
-            command_type: "dock".into(),
-            payload: json!({ "station": "A" }),
+            command_type: "move".into(),
+            payload: json!({ "target_position_x": 10, "target_position_y": 20 }),
             expires_at: None,
         };
-        assert_eq!(request.command_type, "dock");
+        assert_eq!(request.command_type, "move");
+        assert!(validate_command_request(&request).is_ok());
+    }
+
+    #[test]
+    fn set_velocity_command_requires_range() {
+        let request = CreateCommandRequest {
+            command_type: "set_velocity".into(),
+            payload: json!({ "set_velocity": 1.5 }),
+            expires_at: None,
+        };
+        assert!(validate_command_request(&request).is_ok());
+    }
+
+    #[test]
+    fn stop_command_requires_boolean_flag() {
+        let request = CreateCommandRequest {
+            command_type: "stop".into(),
+            payload: json!({ "stop": true }),
+            expires_at: None,
+        };
+        assert!(validate_command_request(&request).is_ok());
     }
 
     #[test]

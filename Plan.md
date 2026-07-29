@@ -386,12 +386,10 @@ Robot state on the page should update through a backend WebSocket stream instead
 
 The web app should provide controls with simple icons for sending robot commands through the backend API:
 
-* move in the positive X direction;
-* move in the negative X direction;
-* move in the positive Y direction;
-* move in the negative Y direction;
-* run or resume the robot;
-* stop the robot;
+* `set_velocity` to configure the robot velocity;
+* `move` to a target position with the current velocity;
+* `stop` the robot;
+* `resume` the robot by sending `stop: false`;
 * delete a robot, but only when its derived status is `offline`.
 
 Command controls should call the backend command API instead of publishing directly to MQTT.
@@ -668,7 +666,7 @@ The initial task is complete when:
 12. command status is visible through the backend API;
 13. the web app shows existing robots with status, position, current command status and battery level;
 14. robot state changes are reflected in the web app through WebSocket updates;
-15. the web app can send move, run and stop commands through the backend API;
+15. the web app can send `set_velocity`, `move`, `stop` and resume commands through the backend API;
 16. the web app only allows robot deletion when a robot is offline;
 17. the web app runs locally in development mode and as a Docker Compose service;
 18. Prometheus collects backend and simulator metrics;

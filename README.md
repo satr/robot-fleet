@@ -21,7 +21,7 @@ flowchart LR
     Dashboard -->|REST| Backend
 ```
 
-Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards with position, velocity, and direction, and sends commands through the backend. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step. Grafana includes per-robot motion metrics for velocity and direction.
+Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards with position, set velocity, current velocity, and direction, and sends commands through the backend. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step. Grafana includes per-robot motion metrics for velocity and direction.
 
 ## Repository structure
 
@@ -178,7 +178,7 @@ The backend assigns every command a unique `command_id`. Robots persist complete
 
 Robot status in `GET /robots` and `GET /robots/{robot_id}` is computed from `last_seen_at`: `online` when the backend saw telemetry or state within 5 seconds, `stale` between 5 and 15 seconds, and `offline` after 15 seconds.
 
-The web app reads `GET /robots` for the initial snapshot and then listens to `GET /robots/stream` as a WebSocket for live robot updates. It sends move, run, and stop commands through `POST /robots/{robot_id}/commands`. Offline robots can be deleted through `DELETE /robots/{robot_id}`.
+The web app reads `GET /robots` for the initial snapshot and then listens to `GET /robots/stream` as a WebSocket for live robot updates. It sends `move` and `stop` commands through `POST /robots/{robot_id}/commands`. Offline robots can be deleted through `DELETE /robots/{robot_id}`.
 
 ## MQTT topics
 

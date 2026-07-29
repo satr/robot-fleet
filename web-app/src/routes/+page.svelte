@@ -1,26 +1,25 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import {
-    backendWsUrl,
-    deleteRobot,
-    fetchRobots,
-    sendRobotCommand
-  } from '$lib/api';
+  import { backendWsUrl, deleteRobot, fetchRobots, sendRobotCommand } from '$lib/api';
   import type { Robot, RobotStreamMessage } from '$lib/types';
+
+  type MoveForm = {
+    target_position_x: string;
+    target_position_y: string;
+    set_velocity: string;
+  };
+
+  const emptyMoveForm = (): MoveForm => ({
+    target_position_x: '',
+    target_position_y: '',
+    set_velocity: '1'
+  });
 
   let robots: Robot[] = [];
   let loading = true;
   let error = '';
   let pendingAction = '';
-
-  const commandButtons = [
-    { icon: '→', label: '+X', command: 'move', payload: { axis: 'x', delta: 1 } },
-    { icon: '←', label: '-X', command: 'move', payload: { axis: 'x', delta: -1 } },
-    { icon: '↑', label: '+Y', command: 'move', payload: { axis: 'y', delta: 1 } },
-    { icon: '↓', label: '-Y', command: 'move', payload: { axis: 'y', delta: -1 } },
-    { icon: '▶', label: 'Run', command: 'run', payload: {} },
-    { icon: '■', label: 'Stop', command: 'stop', payload: {} }
-  ];
+  let moveForms: Record<string, MoveForm> = {};
 
   onMount(() => {
     void loadRobots();
@@ -29,6 +28,7 @@
       const message = JSON.parse(event.data) as RobotStreamMessage;
       if (message.event_type === 'robot_deleted' && message.robot_id) {
         robots = robots.filter((robot) => robot.robot_id !== message.robot_id);
+        return;
       }
       if (message.event_type === 'robot_updated' && message.robot) {
         upsertRobot(message.robot);
@@ -45,6 +45,9 @@
     error = '';
     try {
       robots = await fetchRobots();
+      moveForms = Object.fromEntries(
+        robots.map((robot) => [robot.robot_id, moveForms[robot.robot_id] ?? formFromRobot(robot)])
+      );
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to load robots.';
     } finally {
@@ -52,15 +55,39 @@
     }
   }
 
+  function formFromRobot(robot: Robot): MoveForm {
+    return {
+      target_position_x: robot.target_position_x?.toString() ?? '',
+      target_position_y: robot.target_position_y?.toString() ?? '',
+      set_velocity: robot.set_velocity?.toString() ?? '1'
+    };
+  }
+
   function upsertRobot(robot: Robot) {
+    moveForms = {
+      ...moveForms,
+      [robot.robot_id]: moveForms[robot.robot_id] ?? formFromRobot(robot)
+    };
     const index = robots.findIndex((item) => item.robot_id === robot.robot_id);
     if (index === -1) {
-      robots = [...robots, robot].sort((left, right) =>
-        left.robot_id.localeCompare(right.robot_id)
-      );
+      robots = [...robots, robot].sort((left, right) => left.robot_id.localeCompare(right.robot_id));
       return;
     }
     robots = robots.map((item) => (item.robot_id === robot.robot_id ? robot : item));
+  }
+
+  function moveFormFor(robotId: string) {
+    return moveForms[robotId] ?? emptyMoveForm();
+  }
+
+  function updateMoveForm(robotId: string, field: keyof MoveForm, value: string) {
+    moveForms = {
+      ...moveForms,
+      [robotId]: {
+        ...moveFormFor(robotId),
+        [field]: value
+      }
+    };
   }
 
   async function runCommand(robot: Robot, command: string, payload = {}) {
@@ -73,6 +100,54 @@
     } finally {
       pendingAction = '';
     }
+  }
+
+  async function sendSetVelocity(robot: Robot) {
+    const form = moveFormFor(robot.robot_id);
+    if (form.set_velocity.trim() === '') {
+      error = 'Enter set velocity.';
+      return;
+    }
+    const set_velocity = Number(form.set_velocity);
+
+    if (!Number.isFinite(set_velocity) || set_velocity < 0.01 || set_velocity > 10) {
+      error = 'Enter a set velocity between 0.01 and 10.0.';
+      return;
+    }
+
+    await runCommand(robot, 'set_velocity', { set_velocity });
+  }
+
+  async function sendMove(robot: Robot) {
+    const form = moveFormFor(robot.robot_id);
+    if (
+      form.target_position_x.trim() === '' ||
+      form.target_position_y.trim() === '' ||
+      form.set_velocity.trim() === ''
+    ) {
+      error = 'Enter target X, target Y and set velocity.';
+      return;
+    }
+
+    const target_position_x = Number(form.target_position_x);
+    const target_position_y = Number(form.target_position_y);
+    const set_velocity = Number(form.set_velocity);
+
+    if (
+      ![target_position_x, target_position_y, set_velocity].every(Number.isFinite) ||
+      set_velocity < 0.01 ||
+      set_velocity > 10
+    ) {
+      error = 'Enter valid target coordinates and a set velocity between 0.01 and 10.0.';
+      return;
+    }
+
+    await runCommand(robot, 'set_velocity', { set_velocity });
+    await runCommand(robot, 'move', { target_position_x, target_position_y });
+  }
+
+  async function toggleStop(robot: Robot) {
+    await runCommand(robot, 'stop', { stop: !robot.stop });
   }
 
   async function removeRobot(robot: Robot) {
@@ -95,7 +170,7 @@
     return value === null ? 'n/a' : value.toFixed(2);
   }
 
-  function speed(value: number | null) {
+  function velocity(value: number | null) {
     return value === null ? 'n/a' : `${value.toFixed(2)} cm/s`;
   }
 
@@ -150,12 +225,24 @@
               <dd>x {coordinate(robot.position_x)} cm, y {coordinate(robot.position_y)} cm</dd>
             </div>
             <div>
+              <dt>Target</dt>
+              <dd>x {coordinate(robot.target_position_x)} cm, y {coordinate(robot.target_position_y)} cm</dd>
+            </div>
+            <div>
+              <dt>Set velocity</dt>
+              <dd>{velocity(robot.set_velocity)}</dd>
+            </div>
+            <div>
               <dt>Velocity</dt>
-              <dd>{speed(robot.velocity_cm_s)}</dd>
+              <dd>{velocity(robot.velocity)}</dd>
             </div>
             <div>
               <dt>Direction</dt>
               <dd>{heading(robot.direction_degrees)}</dd>
+            </div>
+            <div>
+              <dt>Stopped</dt>
+              <dd>{robot.stop ? 'yes' : 'no'}</dd>
             </div>
             <div>
               <dt>Current command</dt>
@@ -167,17 +254,47 @@
             </div>
           </dl>
 
+          <div class="move-form" aria-label={`Move controls for ${robot.name}`}>
+            <label>
+              <span>Target X</span>
+              <input
+                type="number"
+                step="any"
+                value={moveFormFor(robot.robot_id).target_position_x}
+                on:input={(event) => updateMoveForm(robot.robot_id, 'target_position_x', (event.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+            <label>
+              <span>Target Y</span>
+              <input
+                type="number"
+                step="any"
+                value={moveFormFor(robot.robot_id).target_position_y}
+                on:input={(event) => updateMoveForm(robot.robot_id, 'target_position_y', (event.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+            <label>
+              <span>Set velocity</span>
+              <input
+                type="number"
+                step="any"
+                min="0.01"
+                value={moveFormFor(robot.robot_id).set_velocity}
+                on:input={(event) => updateMoveForm(robot.robot_id, 'set_velocity', (event.currentTarget as HTMLInputElement).value)}
+              />
+            </label>
+            <button disabled={pendingAction !== ''} on:click={() => sendSetVelocity(robot)}>Set velocity</button>
+            <button disabled={pendingAction !== ''} on:click={() => sendMove(robot)}>Move</button>
+          </div>
+
           <div class="controls" aria-label={`Controls for ${robot.name}`}>
-            {#each commandButtons as button}
-              <button
-                title={button.label}
-                disabled={pendingAction !== ''}
-                on:click={() => runCommand(robot, button.command, button.payload)}
-              >
-                <span>{button.icon}</span>
-                {button.label}
-              </button>
-            {/each}
+            <button
+              disabled={pendingAction !== ''}
+              on:click={() => toggleStop(robot)}
+            >
+              <span>{robot.stop ? '▶' : '■'}</span>
+              {robot.stop ? 'Resume' : 'Stop'}
+            </button>
             <button
               class="danger"
               title="Delete offline robot"
@@ -200,7 +317,7 @@
     background: #0f172a;
     color: #e2e8f0;
     font-family:
-      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
 
   .shell {
@@ -260,111 +377,129 @@
     align-items: flex-start;
     display: flex;
     justify-content: space-between;
-    gap: 16px;
+    gap: 12px;
   }
 
   header p,
-  dt {
+  .empty,
+  .error {
     color: #94a3b8;
+  }
+
+  .error {
+    background: rgb(127 29 29 / 0.5);
+    border: 1px solid rgb(248 113 113 / 0.4);
+    border-radius: 14px;
+    margin-bottom: 16px;
+    padding: 12px 14px;
+  }
+
+  .empty {
+    padding: 24px 0;
   }
 
   span.online,
   span.stale,
   span.offline {
     border-radius: 999px;
-    font-size: 0.78rem;
+    font-size: 0.72rem;
     font-weight: 700;
+    letter-spacing: 0.08em;
     padding: 6px 10px;
     text-transform: uppercase;
   }
 
-  .online {
-    background: #064e3b;
-    color: #6ee7b7;
+  span.online {
+    background: rgb(22 163 74 / 0.22);
+    color: #4ade80;
   }
 
-  .stale {
-    background: #713f12;
-    color: #fde68a;
+  span.stale {
+    background: rgb(202 138 4 / 0.2);
+    color: #fbbf24;
   }
 
-  .offline {
-    background: #450a0a;
-    color: #fecaca;
+  span.offline {
+    background: rgb(71 85 105 / 0.45);
+    color: #cbd5e1;
   }
 
   dl {
     display: grid;
-    gap: 12px;
-    margin: 20px 0;
+    gap: 10px;
+    margin: 18px 0 20px;
   }
 
   dl div {
-    background: #0f172a;
-    border-radius: 14px;
-    padding: 12px;
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
   }
 
   dt {
-    font-size: 0.8rem;
-    margin-bottom: 4px;
+    color: #94a3b8;
   }
 
   dd {
-    font-size: 1rem;
-    font-weight: 700;
     margin: 0;
+    text-align: right;
+  }
+
+  .move-form {
+    border-top: 1px solid #23314f;
+    display: grid;
+    gap: 12px;
+    margin-top: 16px;
+    padding-top: 16px;
+  }
+
+  .move-form label {
+    display: grid;
+    gap: 6px;
+  }
+
+  .move-form span {
+    color: #94a3b8;
+    font-size: 0.86rem;
+  }
+
+  input {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    color: inherit;
+    padding: 10px 12px;
   }
 
   .controls {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 14px;
   }
 
   button {
+    align-items: center;
     background: #2563eb;
     border: 0;
     border-radius: 12px;
     color: white;
     cursor: pointer;
-    font-weight: 700;
-    padding: 10px 12px;
+    display: inline-flex;
+    gap: 8px;
+    padding: 10px 14px;
   }
 
-  button span {
-    display: block;
-    font-size: 1.2rem;
+  button.secondary {
+    background: #1e293b;
   }
 
-  button:hover:not(:disabled) {
-    background: #1d4ed8;
+  button.danger {
+    background: #b91c1c;
   }
 
   button:disabled {
     cursor: not-allowed;
-    opacity: 0.45;
-  }
-
-  .secondary {
-    background: #334155;
-  }
-
-  .danger {
-    background: #dc2626;
-  }
-
-  .error,
-  .empty {
-    background: #111c33;
-    border: 1px solid #23314f;
-    border-radius: 16px;
-    padding: 18px;
-  }
-
-  .error {
-    border-color: #b91c1c;
-    color: #fecaca;
-    margin-bottom: 16px;
+    opacity: 0.6;
   }
 </style>
