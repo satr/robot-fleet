@@ -121,32 +121,6 @@ Each robot directory contains `processed_commands.txt`, which stores command UUI
 
 ```text
 make help
-make infra-up
-make infra-down
-make infra-logs
-make db-migrate
-make backend-run
-make backend-stop-dev
-make backend-test
-make web-run
-make web-stop-dev
-make web-build
-make web-check
-make robot-run ROBOT_ID=robot-local
-make robots-stop-dev
-make robot1-down
-make robot2-down
-make robot3-down
-make robots-down
-make dev
-make stop-dev
-make build
-make test
-make docker-build
-make docker-up
-make docker-down
-make docker-logs
-make clean
 ```
 
 ## Service URLs
