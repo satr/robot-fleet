@@ -4,7 +4,10 @@ use chrono::Utc;
 use rand::Rng;
 use robot_fleet_common::{
     mqtt::parse_mqtt_url,
-    types::{CommandResultMessage, RobotCommandMessage, StateMessage, TelemetryMessage},
+    types::{
+        CommandResultMessage, RobotCommandMessage, RobotSensorEventMessage, StateMessage,
+        TelemetryMessage,
+    },
 };
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 use serde_json::json;
@@ -46,6 +49,17 @@ pub(crate) async fn run_robot(
         if let Err(err) = client
             .subscribe(
                 format!("robots/{}/commands", config.robot_id),
+                QoS::AtLeastOnce,
+            )
+            .await
+        {
+            eventloop_task.abort();
+            let _ = eventloop_task.await;
+            return Err(err.into());
+        }
+        if let Err(err) = client
+            .subscribe(
+                format!("robots/{}/commands/high-priority", config.robot_id),
                 QoS::AtLeastOnce,
             )
             .await
@@ -252,6 +266,7 @@ async fn publish_state(
             target_position_x: guard.target_position_x,
             target_position_y: guard.target_position_y,
             current_mission: guard.current_mission.clone(),
+            state: guard.state.clone(),
             software_version: guard.software_version.clone(),
             recorded_at: Utc::now(),
         }
@@ -412,7 +427,81 @@ async fn handle_command(
             publish_command_result(client, config, &command, "completed", "command_completed")
                 .await?;
         }
+        AppliedCommand::SimulateEvent {
+            event_type,
+            priority,
+            interrupted_move_command_id,
+        } => {
+            if let Some(interrupted_move_command_id) = interrupted_move_command_id {
+                publish_command_result_with_payload(
+                    client,
+                    config,
+                    interrupted_move_command_id,
+                    "stopped",
+                    "command_stopped",
+                    json!({
+                        "command_type": "move",
+                        "reason": "sensor_event",
+                        "event_type": &event_type,
+                        "stopped_by": command.command_id,
+                    }),
+                )
+                .await?;
+            }
+
+            publish_command_result(client, config, &command, "running", "command_running").await?;
+            publish_state(client, config, state).await?;
+            {
+                let mut guard = state.lock().await;
+                guard.finish_safe_state();
+            }
+            publish_state(client, config, state).await?;
+            publish_sensor_event(client, config, metrics, &command, &event_type, &priority).await?;
+            publish_command_result(client, config, &command, "completed", "command_completed")
+                .await?;
+        }
     }
+    Ok(())
+}
+
+async fn publish_sensor_event(
+    client: &AsyncClient,
+    config: &Config,
+    metrics: &Metrics,
+    command: &RobotCommandMessage,
+    event_type: &str,
+    priority: &str,
+) -> anyhow::Result<()> {
+    let message = RobotSensorEventMessage {
+        event_id: uuid::Uuid::new_v4(),
+        robot_id: config.robot_id.clone(),
+        event_type: event_type.into(),
+        priority: priority.into(),
+        command_id: Some(command.command_id),
+        payload: json!({
+            "source": "robot_simulator",
+            "safe_state_command": "get_to_save_state",
+            "simulated_by_command_type": command.command_type,
+        }),
+        occurred_at: Utc::now(),
+    };
+    let topic = if priority == "high" {
+        format!("robots/{}/events/high-priority", config.robot_id)
+    } else {
+        format!("robots/{}/events", config.robot_id)
+    };
+    client
+        .publish(
+            topic,
+            QoS::AtLeastOnce,
+            false,
+            serde_json::to_vec(&message)?,
+        )
+        .await?;
+    metrics
+        .sensor_events_sent
+        .with_label_values(&[event_type, priority])
+        .inc();
     Ok(())
 }
 

@@ -133,7 +133,7 @@ async fn create_command(
     )
     .await?;
 
-    let topic = format!("robots/{}/commands", robot_id);
+    let topic = command_topic(&robot_id, &request.command_type);
     let message = serde_json::to_vec(&RobotCommandMessage::from(&command))
         .map_err(|err| ApiError::BadRequest(err.to_string()))?;
     state
@@ -143,6 +143,14 @@ async fn create_command(
     state.metrics.commands_created.inc();
     app::broadcast_robot_update(&state, &robot_id).await;
     Ok(Json(command))
+}
+
+fn command_topic(robot_id: &str, command_type: &str) -> String {
+    if command_type == "extream_temperature" {
+        format!("robots/{robot_id}/commands/high-priority")
+    } else {
+        format!("robots/{robot_id}/commands")
+    }
 }
 
 fn validate_command_request(request: &CreateCommandRequest) -> Result<(), ApiError> {
@@ -204,6 +212,7 @@ fn validate_command_request(request: &CreateCommandRequest) -> Result<(), ApiErr
                 ));
             }
         }
+        "extream_temperature" | "robot_stack" | "robot stack" => {}
         _ => {}
     }
 
@@ -343,6 +352,18 @@ mod tests {
             expires_at: None,
         };
         assert!(validate_command_request(&request).is_ok());
+    }
+
+    #[test]
+    fn incident_commands_use_expected_topics() {
+        assert_eq!(
+            command_topic("robot-01", "extream_temperature"),
+            "robots/robot-01/commands/high-priority"
+        );
+        assert_eq!(
+            command_topic("robot-01", "robot_stack"),
+            "robots/robot-01/commands"
+        );
     }
 
     #[test]

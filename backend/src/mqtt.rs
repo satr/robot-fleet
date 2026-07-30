@@ -3,7 +3,10 @@ use std::time::Duration;
 use chrono::Utc;
 use robot_fleet_common::{
     mqtt::parse_mqtt_url,
-    types::{CommandResultMessage, RobotStreamMessage, StateMessage, TelemetryMessage},
+    types::{
+        CommandResultMessage, RobotSensorEventMessage, RobotStreamMessage, StateMessage,
+        TelemetryMessage,
+    },
 };
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 use tokio::time::sleep;
@@ -29,6 +32,14 @@ pub(crate) async fn run_mqtt_ingestion(state: AppState, mut eventloop: rumqttc::
         "robots/+/command-results",
         QoS::AtLeastOnce,
         "command results",
+    )
+    .await;
+    subscribe(&state, "robots/+/events", QoS::AtLeastOnce, "sensor events").await;
+    subscribe(
+        &state,
+        "robots/+/events/high-priority",
+        QoS::AtLeastOnce,
+        "high priority sensor events",
     )
     .await;
 
@@ -117,6 +128,18 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
             .kafka
             .publish(
                 "robot-command-events",
+                &message.robot_id,
+                &serde_json::to_value(&message)?,
+            )
+            .await;
+    } else if topic.ends_with("/events") || topic.ends_with("/events/high-priority") {
+        let message: RobotSensorEventMessage = serde_json::from_slice(payload)?;
+        db::insert_robot_sensor_event(state, &message).await?;
+        app::broadcast_robot_update(state, &message.robot_id).await;
+        state
+            .kafka
+            .publish(
+                "robot-sensor-events",
                 &message.robot_id,
                 &serde_json::to_value(&message)?,
             )

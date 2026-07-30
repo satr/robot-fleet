@@ -150,6 +150,10 @@
     await runCommand(robot, 'stop', { stop: !robot.stop });
   }
 
+  async function simulateEvent(robot: Robot, eventType: 'extream_temperature' | 'robot_stack') {
+    await runCommand(robot, eventType, { simulated: true });
+  }
+
   async function removeRobot(robot: Robot) {
     if (robot.status !== 'offline') {
       return;
@@ -245,6 +249,10 @@
               <dd>{robot.stop ? 'yes' : 'no'}</dd>
             </div>
             <div>
+              <dt>Robot state</dt>
+              <dd>{robot.state}</dd>
+            </div>
+            <div>
               <dt>Current command</dt>
               <dd>{robot.current_command ?? robot.current_mission ?? 'none'}</dd>
             </div>
@@ -305,6 +313,24 @@
               Delete
             </button>
           </div>
+
+          <section class="event-controls" aria-label={`Simulate events for ${robot.name}`}>
+            <h3>Simulate events</h3>
+            <button
+              class="danger"
+              disabled={pendingAction !== ''}
+              on:click={() => simulateEvent(robot, 'extream_temperature')}
+            >
+              Extream temperature
+            </button>
+            <button
+              class="warning"
+              disabled={pendingAction !== ''}
+              on:click={() => simulateEvent(robot, 'robot_stack')}
+            >
+              Robot stack
+            </button>
+          </section>
         </article>
       {/each}
     </section>
@@ -345,6 +371,7 @@
 
   h1,
   h2,
+  h3,
   p {
     margin: 0;
   }
@@ -352,6 +379,11 @@
   h1 {
     font-size: clamp(2rem, 5vw, 4rem);
     line-height: 1;
+  }
+
+  h3 {
+    color: #cbd5e1;
+    font-size: 0.95rem;
   }
 
   .summary {
@@ -478,6 +510,19 @@
     margin-top: 14px;
   }
 
+  .event-controls {
+    border-top: 1px solid #23314f;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 14px;
+    padding-top: 14px;
+  }
+
+  .event-controls h3 {
+    flex-basis: 100%;
+  }
+
   button {
     align-items: center;
     background: #2563eb;
@@ -496,6 +541,10 @@
 
   button.danger {
     background: #b91c1c;
+  }
+
+  button.warning {
+    background: #ca8a04;
   }
 
   button:disabled {

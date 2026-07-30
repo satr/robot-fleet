@@ -1,4 +1,4 @@
-use prometheus::{Gauge, IntCounter, Registry};
+use prometheus::{Gauge, IntCounter, IntCounterVec, Opts, Registry};
 
 #[derive(Clone)]
 pub(crate) struct Metrics {
@@ -6,6 +6,7 @@ pub(crate) struct Metrics {
     pub(crate) mqtt_connection_status: Gauge,
     pub(crate) telemetry_sent: IntCounter,
     pub(crate) commands_processed: IntCounter,
+    pub(crate) sensor_events_sent: IntCounterVec,
 }
 
 impl Metrics {
@@ -19,14 +20,23 @@ impl Metrics {
             "robot_commands_processed_total",
             "Unique commands processed",
         )?;
+        let sensor_events_sent = IntCounterVec::new(
+            Opts::new(
+                "robot_simulator_sensor_events_sent_total",
+                "Sensor events published by the simulator",
+            ),
+            &["event_type", "priority"],
+        )?;
         registry.register(Box::new(mqtt_connection_status.clone()))?;
         registry.register(Box::new(telemetry_sent.clone()))?;
         registry.register(Box::new(commands_processed.clone()))?;
+        registry.register(Box::new(sensor_events_sent.clone()))?;
         Ok(Self {
             registry,
             mqtt_connection_status,
             telemetry_sent,
             commands_processed,
+            sensor_events_sent,
         })
     }
 }

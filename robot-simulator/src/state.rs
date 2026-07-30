@@ -21,10 +21,12 @@ pub(crate) struct RobotState {
     pub(crate) target_position_y: Option<f64>,
     pub(crate) online: bool,
     pub(crate) current_mission: Option<String>,
+    pub(crate) state: String,
     pub(crate) software_version: String,
     pub(crate) processed_commands: HashSet<Uuid>,
     pub(crate) current_move_command_id: Option<Uuid>,
     completed_move_commands: HashSet<Uuid>,
+    safe_state: bool,
     motion_tick_seconds: f64,
 }
 
@@ -37,6 +39,11 @@ pub(crate) enum AppliedCommand {
     Stop {
         stop: bool,
         affected_move_command_id: Option<Uuid>,
+    },
+    SimulateEvent {
+        event_type: String,
+        priority: String,
+        interrupted_move_command_id: Option<Uuid>,
     },
 }
 
@@ -55,10 +62,12 @@ impl RobotState {
             target_position_y: None,
             online: true,
             current_mission: None,
+            state: "idle".into(),
             software_version: "0.1.0".into(),
             processed_commands,
             current_move_command_id: None,
             completed_move_commands: HashSet::new(),
+            safe_state: false,
             motion_tick_seconds,
         }
     }
@@ -79,6 +88,7 @@ impl RobotState {
                 self.target_position_y = Some(target_position_y);
                 self.stop = false;
                 self.current_mission = Some("move".into());
+                self.safe_state = false;
                 self.current_move_command_id = Some(command_id);
                 self.update_motion_state();
                 Ok(AppliedCommand::Move {
@@ -94,14 +104,27 @@ impl RobotState {
             "stop" => {
                 let stop = parse_stop_payload(payload)?;
                 self.stop = stop;
+                if !stop {
+                    self.safe_state = false;
+                }
                 self.update_motion_state();
                 Ok(AppliedCommand::Stop {
                     stop,
                     affected_move_command_id: self.current_move_command_id,
                 })
             }
+            "extream_temperature" => Ok(self.start_simulated_event("extream_temperature", "high")),
+            "robot_stack" | "robot stack" => {
+                Ok(self.start_simulated_event("robot_stack", "normal"))
+            }
             other => Err(anyhow!("unsupported command_type: {other}")),
         }
+    }
+
+    pub(crate) fn finish_safe_state(&mut self) {
+        self.current_mission = None;
+        self.safe_state = true;
+        self.refresh_operating_state();
     }
 
     pub(crate) fn take_completed_move_command(&mut self, command_id: Uuid) -> bool {
@@ -115,15 +138,18 @@ impl RobotState {
     fn advance_motion(&mut self) {
         if self.stop {
             self.velocity = 0.0;
+            self.refresh_operating_state();
             return;
         }
 
         let Some(target_position_x) = self.target_position_x else {
             self.velocity = 0.0;
+            self.refresh_operating_state();
             return;
         };
         let Some(target_position_y) = self.target_position_y else {
             self.velocity = 0.0;
+            self.refresh_operating_state();
             return;
         };
 
@@ -138,6 +164,7 @@ impl RobotState {
             self.target_position_y = None;
             self.current_mission = None;
             self.complete_current_move_command();
+            self.refresh_operating_state();
             return;
         }
 
@@ -157,16 +184,20 @@ impl RobotState {
             self.target_position_y = None;
             self.current_mission = None;
             self.complete_current_move_command();
+        } else {
+            self.refresh_operating_state();
         }
     }
 
     fn update_motion_state(&mut self) {
         let Some(target_position_x) = self.target_position_x else {
             self.velocity = 0.0;
+            self.refresh_operating_state();
             return;
         };
         let Some(target_position_y) = self.target_position_y else {
             self.velocity = 0.0;
+            self.refresh_operating_state();
             return;
         };
 
@@ -179,6 +210,7 @@ impl RobotState {
             self.target_position_y = None;
             self.current_mission = None;
             self.complete_current_move_command();
+            self.refresh_operating_state();
             return;
         }
         self.direction_degrees = delta_y.atan2(delta_x).to_degrees().rem_euclid(360.0);
@@ -187,12 +219,42 @@ impl RobotState {
         } else {
             self.set_velocity
         };
+        self.refresh_operating_state();
     }
 
     fn complete_current_move_command(&mut self) {
         if let Some(command_id) = self.current_move_command_id.take() {
             self.completed_move_commands.insert(command_id);
         }
+        self.refresh_operating_state();
+    }
+
+    fn start_simulated_event(&mut self, event_type: &str, priority: &str) -> AppliedCommand {
+        let interrupted_move_command_id = self.current_move_command_id.take();
+        self.target_position_x = None;
+        self.target_position_y = None;
+        self.velocity = 0.0;
+        self.stop = true;
+        self.safe_state = false;
+        self.current_mission = Some("get_to_save_state".into());
+        self.refresh_operating_state();
+        AppliedCommand::SimulateEvent {
+            event_type: event_type.into(),
+            priority: priority.into(),
+            interrupted_move_command_id,
+        }
+    }
+
+    fn refresh_operating_state(&mut self) {
+        if self.safe_state {
+            self.state = "idle in safe state".into();
+            return;
+        }
+        if let Some(current_mission) = &self.current_mission {
+            self.state = format!("running: {current_mission}");
+            return;
+        }
+        self.state = "idle".into();
     }
 
     pub(crate) async fn update_state(state: Arc<Mutex<Self>>, interval_duration: Duration) {
@@ -318,6 +380,7 @@ mod tests {
         assert_eq!(state.set_velocity, 2.0);
         assert!(!state.stop);
         assert_eq!(state.current_mission.as_deref(), Some("move"));
+        assert_eq!(state.state, "running: move");
         assert_eq!(state.velocity, 2.0);
     }
 
@@ -447,5 +510,41 @@ mod tests {
         assert_eq!(state.velocity, 0.0);
         assert_eq!(state.target_position_x, None);
         assert_eq!(state.target_position_y, None);
+        assert_eq!(state.state, "idle");
+    }
+
+    #[test]
+    fn simulated_event_interrupts_motion_and_finishes_safe_state() {
+        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let move_command_id = Uuid::new_v4();
+        state
+            .apply_command(
+                move_command_id,
+                "move",
+                &json!({ "target_position_x": 10, "target_position_y": 0 }),
+            )
+            .expect("move command");
+
+        let applied = state
+            .apply_command(Uuid::new_v4(), "extream_temperature", &json!({}))
+            .expect("simulated event command");
+
+        assert_eq!(
+            applied,
+            AppliedCommand::SimulateEvent {
+                event_type: "extream_temperature".into(),
+                priority: "high".into(),
+                interrupted_move_command_id: Some(move_command_id)
+            }
+        );
+        assert_eq!(state.velocity, 0.0);
+        assert!(state.stop);
+        assert_eq!(state.current_mission.as_deref(), Some("get_to_save_state"));
+        assert_eq!(state.state, "running: get_to_save_state");
+
+        state.finish_safe_state();
+
+        assert_eq!(state.current_mission, None);
+        assert_eq!(state.state, "idle in safe state");
     }
 }

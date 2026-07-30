@@ -14,6 +14,7 @@ export type Robot = {
   target_position_x: number | null;
   target_position_y: number | null;
   current_mission: string | null;
+  state: string;
   current_command: string | null;
   current_command_status: string | null;
   last_seen_at: string | null;

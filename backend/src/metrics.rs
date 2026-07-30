@@ -10,6 +10,7 @@ pub(crate) struct Metrics {
     pub(crate) commands_created: IntCounter,
     pub(crate) commands_completed: IntCounter,
     pub(crate) command_failures: IntCounter,
+    pub(crate) sensor_events_received: IntCounterVec,
     pub(crate) mqtt_connection_status: Gauge,
     pub(crate) telemetry_lag_seconds: Gauge,
     pub(crate) robot_position_x_cm: GaugeVec,
@@ -39,6 +40,13 @@ impl Metrics {
             IntCounter::new("commands_completed_total", "Commands completed by robots")?;
         let command_failures =
             IntCounter::new("command_failures_total", "Commands reported as failed")?;
+        let sensor_events_received = IntCounterVec::new(
+            Opts::new(
+                "robot_sensor_events_total",
+                "Sensor events received from robots",
+            ),
+            &["event_type", "priority", "robot_id"],
+        )?;
         let mqtt_connection_status =
             Gauge::new("mqtt_connection_status", "Backend MQTT connection status")?;
         let telemetry_lag_seconds = Gauge::new(
@@ -86,6 +94,7 @@ impl Metrics {
         registry.register(Box::new(commands_created.clone()))?;
         registry.register(Box::new(commands_completed.clone()))?;
         registry.register(Box::new(command_failures.clone()))?;
+        registry.register(Box::new(sensor_events_received.clone()))?;
         registry.register(Box::new(mqtt_connection_status.clone()))?;
         registry.register(Box::new(telemetry_lag_seconds.clone()))?;
         registry.register(Box::new(robot_position_x_cm.clone()))?;
@@ -104,6 +113,7 @@ impl Metrics {
             commands_created,
             commands_completed,
             command_failures,
+            sensor_events_received,
             mqtt_connection_status,
             telemetry_lag_seconds,
             robot_position_x_cm,

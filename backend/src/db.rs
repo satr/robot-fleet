@@ -4,7 +4,10 @@ use anyhow::Context;
 use chrono::{DateTime, Utc};
 use robot_fleet_common::{
     status::robot_status_from_last_seen,
-    types::{CommandResponse, CommandResultMessage, Robot, StateMessage, TelemetryMessage},
+    types::{
+        CommandResponse, CommandResultMessage, Robot, RobotSensorEventMessage, StateMessage,
+        TelemetryMessage,
+    },
 };
 use serde_json::Value;
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
@@ -28,6 +31,7 @@ const ROBOT_VIEW_SELECT: &str = "SELECT
      r.target_position_x,
      r.target_position_y,
      r.current_mission,
+     r.state,
      r.last_seen_at,
      r.software_version,
      r.created_at,
@@ -213,8 +217,8 @@ pub(crate) async fn upsert_robot_state(
     message: &StateMessage,
 ) -> anyhow::Result<()> {
     sqlx::query(
-        "INSERT INTO robots (robot_id, name, status, battery_level, position_x, position_y, set_velocity, velocity, direction_degrees, stop, target_position_x, target_position_y, current_mission, last_seen_at, software_version, updated_at)
-         VALUES ($1, $2, 'online', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now(), $13, now())
+        "INSERT INTO robots (robot_id, name, status, battery_level, position_x, position_y, set_velocity, velocity, direction_degrees, stop, target_position_x, target_position_y, current_mission, state, last_seen_at, software_version, updated_at)
+         VALUES ($1, $2, 'online', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now(), $14, now())
          ON CONFLICT (robot_id) DO UPDATE
          SET name = EXCLUDED.name,
             status = 'online',
@@ -228,6 +232,7 @@ pub(crate) async fn upsert_robot_state(
             target_position_x = EXCLUDED.target_position_x,
             target_position_y = EXCLUDED.target_position_y,
             current_mission = EXCLUDED.current_mission,
+            state = EXCLUDED.state,
             last_seen_at = now(),
             software_version = EXCLUDED.software_version,
             updated_at = now()",
@@ -244,9 +249,11 @@ pub(crate) async fn upsert_robot_state(
     .bind(message.target_position_x)
     .bind(message.target_position_y)
     .bind(&message.current_mission)
+    .bind(&message.state)
     .bind(&message.software_version)
     .execute(&state.pool)
     .await?;
+    insert_robot_state_history(state, message).await?;
     sync_motion_metrics(
         &state.metrics,
         &message.robot_id,
@@ -255,6 +262,75 @@ pub(crate) async fn upsert_robot_state(
         message.velocity,
         message.direction_degrees,
     );
+    Ok(())
+}
+
+async fn insert_robot_state_history(
+    state: &AppState,
+    message: &StateMessage,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO robot_state_history (robot_id, recorded_at, state, status, battery_level, position_x, position_y, velocity, current_mission, payload)
+         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
+         WHERE NOT EXISTS (
+             SELECT 1
+             FROM (
+                 SELECT state
+                 FROM robot_state_history
+                 WHERE robot_id = $1
+                 ORDER BY recorded_at DESC
+                 LIMIT 1
+             ) latest
+             WHERE latest.state = $3
+         )
+         ON CONFLICT (robot_id, recorded_at) DO NOTHING",
+    )
+    .bind(&message.robot_id)
+    .bind(message.recorded_at)
+    .bind(&message.state)
+    .bind(&message.status)
+    .bind(message.battery_level)
+    .bind(message.position_x)
+    .bind(message.position_y)
+    .bind(message.velocity)
+    .bind(&message.current_mission)
+    .bind(serde_json::json!({
+        "set_velocity": message.set_velocity,
+        "direction_degrees": message.direction_degrees,
+        "stop": message.stop,
+        "target_position_x": message.target_position_x,
+        "target_position_y": message.target_position_y,
+        "software_version": message.software_version,
+    }))
+    .execute(&state.pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn insert_robot_sensor_event(
+    state: &AppState,
+    message: &RobotSensorEventMessage,
+) -> Result<(), sqlx::Error> {
+    insert_placeholder_robot(&state.pool, &message.robot_id).await?;
+    sqlx::query(
+        "INSERT INTO robot_sensor_events (event_id, robot_id, event_type, priority, command_id, payload, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT (event_id, occurred_at) DO NOTHING",
+    )
+    .bind(message.event_id)
+    .bind(&message.robot_id)
+    .bind(&message.event_type)
+    .bind(&message.priority)
+    .bind(message.command_id)
+    .bind(&message.payload)
+    .bind(message.occurred_at)
+    .execute(&state.pool)
+    .await?;
+    state
+        .metrics
+        .sensor_events_received
+        .with_label_values(&[&message.event_type, &message.priority, &message.robot_id])
+        .inc();
     Ok(())
 }
 
@@ -519,6 +595,7 @@ fn robot_from_row(row: sqlx::postgres::PgRow) -> Robot {
         target_position_x: row.get("target_position_x"),
         target_position_y: row.get("target_position_y"),
         current_mission: row.get("current_mission"),
+        state: row.get("state"),
         current_command: row.get("current_command"),
         current_command_status: row.get("current_command_status"),
         last_seen_at,

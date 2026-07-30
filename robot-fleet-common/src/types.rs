@@ -18,6 +18,7 @@ pub struct Robot {
     pub target_position_x: Option<f64>,
     pub target_position_y: Option<f64>,
     pub current_mission: Option<String>,
+    pub state: String,
     pub current_command: Option<String>,
     pub current_command_status: Option<String>,
     pub last_seen_at: Option<DateTime<Utc>>,
@@ -50,8 +51,14 @@ pub struct StateMessage {
     pub target_position_x: Option<f64>,
     pub target_position_y: Option<f64>,
     pub current_mission: Option<String>,
+    #[serde(default = "default_robot_state")]
+    pub state: String,
     pub software_version: String,
     pub recorded_at: DateTime<Utc>,
+}
+
+fn default_robot_state() -> String {
+    "idle".into()
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -74,6 +81,19 @@ pub struct CommandResultMessage {
     pub robot_id: String,
     pub status: String,
     pub event_type: String,
+    pub payload: Value,
+    pub occurred_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RobotSensorEventMessage {
+    pub event_id: Uuid,
+    pub robot_id: String,
+    pub event_type: String,
+    pub priority: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_id: Option<Uuid>,
+    #[serde(default)]
     pub payload: Value,
     pub occurred_at: DateTime<Utc>,
 }
@@ -152,6 +172,7 @@ mod tests {
 
         assert_eq!(message.position_x, 0.0);
         assert_eq!(message.position_y, 0.0);
+        assert_eq!(message.state, "idle");
     }
 
     #[test]
