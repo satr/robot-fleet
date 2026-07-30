@@ -46,27 +46,12 @@ pub(crate) async fn run_robot(
             .await
         });
 
-        if let Err(err) = client
-            .subscribe(
-                format!("robots/{}/commands", config.robot_id),
-                QoS::AtLeastOnce,
-            )
-            .await
-        {
-            eventloop_task.abort();
-            let _ = eventloop_task.await;
-            return Err(err.into());
-        }
-        if let Err(err) = client
-            .subscribe(
-                format!("robots/{}/simulated-events", config.robot_id),
-                QoS::AtLeastOnce,
-            )
-            .await
-        {
-            eventloop_task.abort();
-            let _ = eventloop_task.await;
-            return Err(err.into());
+        for topic in command_subscription_topics(&config.robot_id) {
+            if let Err(err) = client.subscribe(topic, QoS::AtLeastOnce).await {
+                eventloop_task.abort();
+                let _ = eventloop_task.await;
+                return Err(err.into());
+            }
         }
         publish_state(&client, &config, &state).await?;
 
@@ -485,11 +470,7 @@ async fn publish_sensor_event(
         }),
         occurred_at: Utc::now(),
     };
-    let topic = if priority == "high" {
-        format!("robots/{}/events/high-priority", config.robot_id)
-    } else {
-        format!("robots/{}/events", config.robot_id)
-    };
+    let topic = sensor_event_topic(&config.robot_id, priority);
     client
         .publish(
             topic,
@@ -503,6 +484,22 @@ async fn publish_sensor_event(
         .with_label_values(&[event_type, priority])
         .inc();
     Ok(())
+}
+
+fn command_subscription_topics(robot_id: &str) -> [String; 3] {
+    [
+        format!("robots/{robot_id}/commands"),
+        format!("robots/{robot_id}/simulated-events"),
+        format!("robots/{robot_id}/commands/high-priority"),
+    ]
+}
+
+fn sensor_event_topic(robot_id: &str, priority: &str) -> String {
+    if priority == "high" {
+        format!("robots/{robot_id}/events/high-priority")
+    } else {
+        format!("robots/{robot_id}/events")
+    }
 }
 
 fn spawn_move_completion_watcher(
@@ -597,4 +594,33 @@ async fn publish_command_result_with_payload(
         )
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{command_subscription_topics, sensor_event_topic};
+
+    #[test]
+    fn simulator_accepts_event_requests_on_current_and_legacy_topics() {
+        assert_eq!(
+            command_subscription_topics("robot-01"),
+            [
+                "robots/robot-01/commands".to_string(),
+                "robots/robot-01/simulated-events".to_string(),
+                "robots/robot-01/commands/high-priority".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn sensor_events_use_priority_specific_topics() {
+        assert_eq!(
+            sensor_event_topic("robot-01", "high"),
+            "robots/robot-01/events/high-priority"
+        );
+        assert_eq!(
+            sensor_event_topic("robot-01", "normal"),
+            "robots/robot-01/events"
+        );
+    }
 }
