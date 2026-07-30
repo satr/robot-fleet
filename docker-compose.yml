@@ -201,6 +201,34 @@ services:
     volumes:
       - ./data/victoriametrics:/victoria-metrics-data
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: robot-fleet-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./infrastructure/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+
+  vmalert:
+    image: victoriametrics/vmalert:v1.102.1
+    container_name: robot-fleet-vmalert
+    restart: unless-stopped
+    ports:
+      - "8880:8880"
+    volumes:
+      - ./infrastructure/vmalert/rules.yml:/etc/vmalert/rules.yml:ro
+    command:
+      - "--rule=/etc/vmalert/rules.yml"
+      - "--datasource.url=http://victoriametrics:8428"
+      - "--notifier.url=http://alertmanager:9093"
+    depends_on:
+      - victoriametrics
+      - alertmanager
+
   grafana:
     image: grafana/grafana:10.4.4
     container_name: robot-fleet-grafana

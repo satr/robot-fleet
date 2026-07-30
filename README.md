@@ -18,11 +18,13 @@ flowchart LR
     WebApp -->|REST and WebSocket| Backend
     Prometheus --> Backend
     Prometheus --> VictoriaMetrics
+    vmalert --> Alertmanager
+    Alertmanager --> Backend
     Grafana --> VictoriaMetrics
     Dashboard -->|REST| Backend
 ```
 
-Current implementation: the backend subscribes to robot MQTT telemetry/state/result/event topics, stores current robot state in PostgreSQL, stores historical telemetry and robot state transitions in TimescaleDB hypertables, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards with position, set velocity, current velocity, direction, and operating state, and sends commands through the backend.
+Current implementation: the backend subscribes to robot MQTT telemetry/state/result/event topics, stores current robot state in PostgreSQL, stores historical telemetry and robot state transitions in TimescaleDB hypertables, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards with position, set velocity, current velocity, direction, and operating state, and sends commands through the backend. vmalert evaluates robot sensor events and sends `extream_temperature` and `robot_stack` alerts through Alertmanager to the backend webhook.
 
 ![Web app dashboard](img/robot-fleet-dashboard.png)
 
@@ -38,7 +40,9 @@ robot-fleet-common/      Shared Rust domain types and helpers
 web-app/                 SvelteKit fleet UI
 robot-simulator/         Rust MQTT robot simulator
 infrastructure/mqtt/     Mosquitto config
+infrastructure/alertmanager/
 infrastructure/prometheus/
+infrastructure/vmalert/
 infrastructure/grafana/  Provisioned datasource and dashboard
 data/                    Persistent local Docker data
 docker-compose.yml       Local platform
@@ -79,7 +83,7 @@ cd web-app && npm install
 make web-run
 ```
 
-Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`, then remote-writes metrics to VictoriaMetrics. Grafana queries VictoriaMetrics through its Prometheus-compatible API.
+Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`, then remote-writes metrics to VictoriaMetrics. Grafana queries VictoriaMetrics through its Prometheus-compatible API. vmalert evaluates alert rules against VictoriaMetrics and forwards notifications to Alertmanager.
 
 For local simulator runs, processed command IDs are stored in `data/robots/<ROBOT_ID>/processed_commands.txt`. Docker simulators store the same idempotency state under their mounted `/state` volume.
 
@@ -137,6 +141,8 @@ Backend:    http://localhost:8089
 Web app:    http://localhost:3001  (Docker) or http://localhost:5173 (local dev)
 Grafana:    http://localhost:3000  admin/admin
 Prometheus: http://localhost:9090
+Alertmanager: http://localhost:9093
+vmalert:    http://localhost:8880
 VictoriaMetrics: http://localhost:8428
 MQTT:       localhost:1883
 PostgreSQL: localhost:5432
@@ -188,7 +194,7 @@ Command messages sent by the backend to `robots/{robot_id}/commands` include the
 
 Simulator command lifecycle states are published to `robots/{robot_id}/command-results` as `acknowledged`, `running`, `completed`, `failed`, `expired`, or `stopped`. `move` runs until the robot reaches the target at the current `set_velocity`; a later `move` overrides the active move and marks the prior move `stopped`. `set_velocity` can run while a move is active and immediately changes the operating velocity used by that move. `stop` with `true` pauses motion and reports the active move as `stopped`; `stop` with `false` resumes toward the last target position using the current set velocity.
 
-The simulator also accepts `extream_temperature` and `robot_stack` event simulation requests on `robots/{robot_id}/simulated-events` and the legacy `robots/{robot_id}/commands/high-priority` topic. `extream_temperature` publishes the resulting sensor event to `robots/{robot_id}/events/high-priority`, which the backend subscribes to separately; `robot_stack` publishes to the normal `robots/{robot_id}/events` topic. Both stop the active move, run the internal `get_to_save_state` safe-state command, publish robot state as `idle in safe state`, and emit a sensor event metric (`robot_sensor_events_total`) consumed by the Grafana dashboard.
+The simulator also accepts `extream_temperature` and `robot_stack` event simulation requests on `robots/{robot_id}/simulated-events` and the legacy `robots/{robot_id}/commands/high-priority` topic. `extream_temperature` publishes the resulting sensor event to `robots/{robot_id}/events/high-priority`, which the backend subscribes to separately; `robot_stack` publishes to the normal `robots/{robot_id}/events` topic. Both stop the active move, run the internal `get_to_save_state` safe-state command, publish robot state as `idle in safe state`, and emit a sensor event metric (`robot_sensor_events_total`) consumed by the Grafana dashboard and vmalert rules.
 
 ## Configuration
 

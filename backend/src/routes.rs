@@ -9,6 +9,7 @@ use axum::{
     Json, Router,
 };
 use prometheus::{Encoder, TextEncoder};
+use serde_json::Value;
 use robot_fleet_common::types::{
     CommandResponse, CreateCommandRequest, HealthResponse, Robot, RobotCommandMessage,
     RobotStreamMessage,
@@ -32,6 +33,7 @@ pub(crate) fn router(state: AppState) -> Router {
             "/robots/:robot_id/commands",
             post(create_command).get(list_commands),
         )
+        .route("/internal/alertmanager/webhook", post(alertmanager_webhook))
         .route("/metrics", get(metrics))
         .layer(cors)
         .with_state(state)
@@ -262,6 +264,24 @@ async fn metrics(State(state): State<AppState>) -> Result<String, ApiError> {
     String::from_utf8(buffer).map_err(|err| ApiError::BadRequest(err.to_string()))
 }
 
+async fn alertmanager_webhook(
+    State(state): State<AppState>,
+    Json(payload): Json<Value>,
+) -> StatusCode {
+    state
+        .metrics
+        .http_requests
+        .with_label_values(&["POST /internal/alertmanager/webhook"])
+        .inc();
+
+    let alert_count = payload
+        .get("alerts")
+        .and_then(Value::as_array)
+        .map_or(0, |alerts| alerts.len());
+    tracing::info!(alert_count, "received alertmanager webhook");
+    StatusCode::OK
+}
+
 async fn robot_stream_socket(
     mut socket: WebSocket,
     mut rx: tokio::sync::broadcast::Receiver<RobotStreamMessage>,
@@ -316,6 +336,22 @@ mod tests {
                 Request::builder()
                     .uri("/health")
                     .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn alertmanager_webhook_returns_ok() {
+        let response = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/internal/alertmanager/webhook")
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "alerts": [] }).to_string()))
                     .unwrap(),
             )
             .await
