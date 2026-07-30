@@ -269,20 +269,37 @@ async fn insert_robot_state_history(
     state: &AppState,
     message: &StateMessage,
 ) -> Result<(), sqlx::Error> {
+    let latest_snapshot = sqlx::query(
+        "SELECT state, status, battery_level, position_x, position_y, velocity, current_mission, payload
+         FROM robot_state_history
+         WHERE robot_id = $1
+         ORDER BY recorded_at DESC
+         LIMIT 1",
+    )
+    .bind(&message.robot_id)
+    .fetch_optional(&state.pool)
+    .await?
+    .map(|row| RobotStateHistorySnapshot {
+        state: row.get("state"),
+        status: row.get("status"),
+        battery_level: row.get("battery_level"),
+        position_x: row.get("position_x"),
+        position_y: row.get("position_y"),
+        velocity: row.get("velocity"),
+        current_mission: row.get("current_mission"),
+        payload: row.get("payload"),
+    });
+
+    if latest_snapshot
+        .as_ref()
+        .is_some_and(|latest| robot_state_history_snapshot_is_duplicate(message, latest))
+    {
+        return Ok(());
+    }
+
     sqlx::query(
         "INSERT INTO robot_state_history (robot_id, recorded_at, state, status, battery_level, position_x, position_y, velocity, current_mission, payload)
-         SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10
-         WHERE NOT EXISTS (
-             SELECT 1
-             FROM (
-                 SELECT state
-                 FROM robot_state_history
-                 WHERE robot_id = $1
-                 ORDER BY recorded_at DESC
-                 LIMIT 1
-             ) latest
-             WHERE latest.state = $3
-         )
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (robot_id, recorded_at) DO NOTHING",
     )
     .bind(&message.robot_id)
@@ -305,6 +322,40 @@ async fn insert_robot_state_history(
     .execute(&state.pool)
     .await?;
     Ok(())
+}
+
+#[derive(Debug)]
+struct RobotStateHistorySnapshot {
+    state: String,
+    status: String,
+    battery_level: f64,
+    position_x: f64,
+    position_y: f64,
+    velocity: f64,
+    current_mission: Option<String>,
+    payload: Value,
+}
+
+fn robot_state_history_snapshot_is_duplicate(
+    message: &StateMessage,
+    latest: &RobotStateHistorySnapshot,
+) -> bool {
+    latest.state == message.state
+        && latest.status == message.status
+        && latest.battery_level == message.battery_level
+        && latest.position_x == message.position_x
+        && latest.position_y == message.position_y
+        && latest.velocity == message.velocity
+        && latest.current_mission == message.current_mission
+        && latest.payload
+            == serde_json::json!({
+                "set_velocity": message.set_velocity,
+                "direction_degrees": message.direction_degrees,
+                "stop": message.stop,
+                "target_position_x": message.target_position_x,
+                "target_position_y": message.target_position_y,
+                "software_version": message.software_version,
+            })
 }
 
 pub(crate) async fn insert_robot_sensor_event(
@@ -644,11 +695,17 @@ fn command_from_row(row: sqlx::postgres::PgRow) -> CommandResponse {
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
-    use robot_fleet_common::{status::robot_status_from_last_seen, types::CommandResultMessage};
+    use robot_fleet_common::{
+        status::robot_status_from_last_seen,
+        types::{CommandResultMessage, StateMessage},
+    };
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::{command_state_projection, CommandStateProjection};
+    use super::{
+        command_state_projection, robot_state_history_snapshot_is_duplicate,
+        CommandStateProjection, RobotStateHistorySnapshot,
+    };
 
     #[test]
     fn robot_status_is_derived_from_last_seen_age() {
@@ -701,5 +758,47 @@ mod tests {
             }
             other => panic!("unexpected projection: {other:?}"),
         }
+    }
+
+    #[test]
+    fn identical_state_history_snapshots_are_skipped() {
+        let message = StateMessage {
+            robot_id: "robot-01".into(),
+            name: "Robot 01".into(),
+            status: "online".into(),
+            battery_level: 92.5,
+            position_x: 10.0,
+            position_y: 5.0,
+            set_velocity: 1.5,
+            velocity: 1.0,
+            direction_degrees: 90.0,
+            stop: false,
+            target_position_x: Some(20.0),
+            target_position_y: Some(30.0),
+            current_mission: Some("move".into()),
+            state: "idle".into(),
+            software_version: "0.1.0".into(),
+            recorded_at: Utc::now(),
+        };
+
+        let latest = RobotStateHistorySnapshot {
+            state: message.state.clone(),
+            status: message.status.clone(),
+            battery_level: message.battery_level,
+            position_x: message.position_x,
+            position_y: message.position_y,
+            velocity: message.velocity,
+            current_mission: message.current_mission.clone(),
+            payload: json!({
+                "set_velocity": message.set_velocity,
+                "direction_degrees": message.direction_degrees,
+                "stop": message.stop,
+                "target_position_x": message.target_position_x,
+                "target_position_y": message.target_position_y,
+                "software_version": message.software_version,
+            }),
+        };
+
+        assert!(robot_state_history_snapshot_is_duplicate(&message, &latest));
     }
 }
