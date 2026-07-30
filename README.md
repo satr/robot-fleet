@@ -21,7 +21,6 @@ flowchart LR
     vmalert --> Alertmanager
     Alertmanager --> Backend
     Grafana --> VictoriaMetrics
-    Dashboard -->|REST| Backend
 ```
 
 Current implementation: the backend subscribes to robot MQTT telemetry/state/result/event topics, stores current robot state in PostgreSQL, stores historical telemetry and robot state transitions in TimescaleDB hypertables, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards with position, set velocity, current velocity, direction, and operating state, and sends commands through the backend. vmalert evaluates robot sensor events and sends `extream_temperature` and `robot_stack` alerts through Alertmanager to the backend webhook.

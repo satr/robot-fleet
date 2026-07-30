@@ -604,7 +604,6 @@ flowchart LR
     WebApp -->|REST and WebSocket| Backend
     Prometheus --> Backend
     Grafana --> Prometheus
-    Dashboard -->|REST| Backend
 ```
 
 Document expected local URLs, for example:
