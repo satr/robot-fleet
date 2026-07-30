@@ -1,6 +1,6 @@
 # Robot Fleet
 
-Robot Fleet is a small learning project for building a robot fleet-management platform one piece at a time. It includes a Rust backend, a SvelteKit web app, simulated robots, MQTT, Kafka, PostgreSQL with TimescaleDB, Prometheus, Grafana, Docker Compose, and a Makefile.
+Robot Fleet is a small learning project for building a robot fleet-management platform one piece at a time. It includes a Rust backend, a SvelteKit web app, simulated robots, MQTT, Kafka, PostgreSQL with TimescaleDB, Prometheus, VictoriaMetrics, Grafana, Docker Compose, and a Makefile.
 
 The first version intentionally favors readability over production completeness.
 
@@ -17,7 +17,8 @@ flowchart LR
     TelemetryConsumer --> TimescaleDB
     WebApp -->|REST and WebSocket| Backend
     Prometheus --> Backend
-    Grafana --> Prometheus
+    Prometheus --> VictoriaMetrics
+    Grafana --> VictoriaMetrics
     Dashboard -->|REST| Backend
 ```
 
@@ -78,7 +79,7 @@ cd web-app && npm install
 make web-run
 ```
 
-Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`.
+Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`, then remote-writes metrics to VictoriaMetrics. Grafana queries VictoriaMetrics through its Prometheus-compatible API.
 
 For local simulator runs, processed command IDs are stored in `data/robots/<ROBOT_ID>/processed_commands.txt`. Docker simulators store the same idempotency state under their mounted `/state` volume.
 
@@ -115,7 +116,7 @@ Stateful container data is stored in `data/` on the host:
 - `data/postgres/`
 - `data/mqtt/`
 - `data/kafka/`
-- `data/prometheus/`
+- `data/victoriametrics/`
 - `data/grafana/`
 - `data/robots/robot-01/`
 - `data/robots/robot-02/`
@@ -136,6 +137,7 @@ Backend:    http://localhost:8089
 Web app:    http://localhost:3001  (Docker) or http://localhost:5173 (local dev)
 Grafana:    http://localhost:3000  admin/admin
 Prometheus: http://localhost:9090
+VictoriaMetrics: http://localhost:8428
 MQTT:       localhost:1883
 PostgreSQL: localhost:5432
 Kafka:      localhost:9092

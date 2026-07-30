@@ -186,7 +186,20 @@ services:
       - "9090:9090"
     volumes:
       - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./data/prometheus:/prometheus
+    depends_on:
+      - victoriametrics
+
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.102.1
+    container_name: robot-fleet-victoriametrics
+    restart: unless-stopped
+    ports:
+      - "8428:8428"
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-retentionPeriod=1"
+    volumes:
+      - ./data/victoriametrics:/victoria-metrics-data
 
   grafana:
     image: grafana/grafana:10.4.4
@@ -203,3 +216,4 @@ services:
       - ./infrastructure/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+      - victoriametrics

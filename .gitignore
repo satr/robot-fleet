@@ -10,6 +10,7 @@ data/*
 !data/mqtt/.gitkeep
 !data/kafka/.gitkeep
 !data/prometheus/.gitkeep
+!data/victoriametrics/.gitkeep
 !data/grafana/.gitkeep
 !data/robots/.gitkeep
 !data/robots/robot-01/.gitkeep

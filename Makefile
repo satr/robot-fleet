@@ -17,7 +17,7 @@ PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
 
 help:
 	@echo "Robot Fleet commands:"
-	@echo "  make infra-up       Start Postgres/TimescaleDB, MQTT, Kafka, Prometheus, Grafana"
+	@echo "  make infra-up       Start Postgres/TimescaleDB, MQTT, Kafka, Prometheus, VictoriaMetrics, Grafana"
 	@echo "  make infra-down     Stop infrastructure services"
 	@echo "  make infra-logs     Follow infrastructure logs"
 	@echo "  make db-migrate     Run backend SQLx migrations"
@@ -45,13 +45,13 @@ help:
 	@echo "  make clean          Remove build artifacts"
 
 infra-up:
-	docker compose up -d postgres-timescaledb mqtt kafka kafka-init prometheus grafana
+	docker compose up -d postgres-timescaledb mqtt kafka kafka-init victoriametrics prometheus grafana
 
 infra-down:
-	docker compose stop postgres-timescaledb mqtt kafka prometheus grafana
+	docker compose stop postgres-timescaledb mqtt kafka victoriametrics prometheus grafana
 
 infra-logs:
-	docker compose logs -f postgres-timescaledb mqtt kafka kafka-init prometheus grafana
+	docker compose logs -f postgres-timescaledb mqtt kafka kafka-init victoriametrics prometheus grafana
 
 db-migrate:
 	docker compose up -d postgres-timescaledb
