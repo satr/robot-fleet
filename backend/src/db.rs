@@ -292,13 +292,20 @@ pub(crate) async fn apply_command_result(
                 .await?;
             state.metrics.commands_completed.inc();
         }
-        "failed" => {
-            sqlx::query("UPDATE commands SET status = 'failed', completed_at = COALESCE(completed_at, $2) WHERE command_id = $1")
+        "failed" | "expired" => {
+            sqlx::query("UPDATE commands SET status = $2, completed_at = COALESCE(completed_at, $3) WHERE command_id = $1")
                 .bind(message.command_id)
+                .bind(&message.status)
                 .bind(message.occurred_at)
                 .execute(&state.pool)
                 .await?;
             state.metrics.command_failures.inc();
+        }
+        "stopped" => {
+            sqlx::query("UPDATE commands SET status = 'stopped' WHERE command_id = $1")
+                .bind(message.command_id)
+                .execute(&state.pool)
+                .await?;
         }
         "running" => {
             sqlx::query("UPDATE commands SET status = 'running' WHERE command_id = $1")

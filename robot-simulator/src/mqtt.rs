@@ -15,7 +15,10 @@ use tokio::{
 use tracing::{info, warn};
 
 use crate::{
-    config::Config, metrics::Metrics, persistence::persist_processed_command, state::RobotState,
+    config::Config,
+    metrics::Metrics,
+    persistence::persist_processed_command,
+    state::{AppliedCommand, RobotState},
 };
 
 pub(crate) async fn run_robot(
@@ -53,8 +56,26 @@ pub(crate) async fn run_robot(
         }
         publish_state(&client, &config, &state).await?;
 
-        let mut telemetry_interval = interval(config.telemetry_interval);
-        telemetry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let telemetry_client = client.clone();
+        let telemetry_config = config.clone();
+        let telemetry_state = state.clone();
+        let telemetry_metrics = metrics.clone();
+        let mut telemetry_task = tokio::spawn(async move {
+            run_telemetry_publisher(
+                telemetry_client,
+                telemetry_config,
+                telemetry_state,
+                telemetry_metrics,
+            )
+            .await
+        });
+
+        let state_client = client.clone();
+        let state_config = config.clone();
+        let state_state = state.clone();
+        let mut state_task = tokio::spawn(async move {
+            run_state_publisher(state_client, state_config, state_state).await
+        });
 
         loop {
             tokio::select! {
@@ -66,17 +87,31 @@ pub(crate) async fn run_robot(
                     }
                     break;
                 }
-                _ = telemetry_interval.tick() => {
-                    if let Err(err) = publish_telemetry(&client, &config, &state, &metrics).await {
-                        warn!(robot_id = config.robot_id, error = %err, "telemetry publish failed; reconnecting");
-                        break;
+                telemetry_result = &mut telemetry_task => {
+                    match telemetry_result {
+                        Ok(Ok(())) => warn!(robot_id = config.robot_id, "telemetry publisher ended; reconnecting"),
+                        Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "telemetry publisher failed; reconnecting"),
+                        Err(err) => warn!(robot_id = config.robot_id, error = %err, "telemetry task failed; reconnecting"),
                     }
+                    break;
+                }
+                state_result = &mut state_task => {
+                    match state_result {
+                        Ok(Ok(())) => warn!(robot_id = config.robot_id, "state publisher ended; reconnecting"),
+                        Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "state publisher failed; reconnecting"),
+                        Err(err) => warn!(robot_id = config.robot_id, error = %err, "state task failed; reconnecting"),
+                    }
+                    break;
                 }
             }
         }
 
         eventloop_task.abort();
+        telemetry_task.abort();
+        state_task.abort();
         let _ = eventloop_task.await;
+        let _ = telemetry_task.await;
+        let _ = state_task.await;
         sleep(Duration::from_secs(2)).await;
     }
 }
@@ -85,7 +120,36 @@ fn connect_mqtt(config: &Config) -> anyhow::Result<(AsyncClient, rumqttc::EventL
     let (host, port) = parse_mqtt_url(&config.mqtt_url)?;
     let mut options = MqttOptions::new(&config.mqtt_client_id, host, port);
     options.set_keep_alive(Duration::from_secs(10));
-    Ok(AsyncClient::new(options, 10))
+    Ok(AsyncClient::new(options, 100))
+}
+
+async fn run_telemetry_publisher(
+    client: AsyncClient,
+    config: Config,
+    state: Arc<Mutex<RobotState>>,
+    metrics: Arc<Metrics>,
+) -> anyhow::Result<()> {
+    let mut telemetry_interval = interval(config.telemetry_interval);
+    telemetry_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    loop {
+        telemetry_interval.tick().await;
+        publish_telemetry(&client, &config, &state, &metrics).await?;
+    }
+}
+
+async fn run_state_publisher(
+    client: AsyncClient,
+    config: Config,
+    state: Arc<Mutex<RobotState>>,
+) -> anyhow::Result<()> {
+    let mut state_interval = interval(config.robot_state_interval);
+    state_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    loop {
+        state_interval.tick().await;
+        publish_state(&client, &config, &state).await?;
+    }
 }
 
 async fn run_eventloop(
@@ -99,11 +163,28 @@ async fn run_eventloop(
         match eventloop.poll().await {
             Ok(Event::Incoming(Incoming::Publish(publish))) => {
                 metrics.mqtt_connection_status.set(1.0);
-                if let Err(err) =
-                    handle_command(&client, &config, &state, &metrics, &publish.payload).await
-                {
-                    warn!(robot_id = config.robot_id, error = %err, "command handling failed");
-                }
+                let command_client = client.clone();
+                let command_config = config.clone();
+                let command_state = state.clone();
+                let command_metrics = metrics.clone();
+                let payload = publish.payload.to_vec();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_command(
+                        &command_client,
+                        &command_config,
+                        &command_state,
+                        &command_metrics,
+                        &payload,
+                    )
+                    .await
+                    {
+                        warn!(
+                            robot_id = command_config.robot_id,
+                            error = %err,
+                            "command handling failed"
+                        );
+                    }
+                });
             }
             Ok(_) => metrics.mqtt_connection_status.set(1.0),
             Err(err) => {
@@ -136,23 +217,6 @@ async fn publish_telemetry(
         direction_degrees: guard.direction_degrees,
         payload: json!({ "online": guard.online }),
     };
-    let state_message = StateMessage {
-        robot_id: config.robot_id.clone(),
-        name: config.robot_name.clone(),
-        status: if guard.online { "online" } else { "offline" }.into(),
-        battery_level: guard.battery_level,
-        position_x: guard.position_x,
-        position_y: guard.position_y,
-        set_velocity: guard.set_velocity,
-        velocity: guard.velocity,
-        direction_degrees: guard.direction_degrees,
-        stop: guard.stop,
-        target_position_x: guard.target_position_x,
-        target_position_y: guard.target_position_y,
-        current_mission: guard.current_mission.clone(),
-        software_version: guard.software_version.clone(),
-        recorded_at: now,
-    };
     drop(guard);
 
     client
@@ -161,14 +225,6 @@ async fn publish_telemetry(
             QoS::AtMostOnce,
             false,
             serde_json::to_vec(&telemetry)?,
-        )
-        .await?;
-    client
-        .publish(
-            format!("robots/{}/state", config.robot_id),
-            QoS::AtLeastOnce,
-            false,
-            serde_json::to_vec(&state_message)?,
         )
         .await?;
     metrics.telemetry_sent.inc();
@@ -227,15 +283,29 @@ async fn handle_command(
         return Ok(());
     }
 
-    let mut guard = state.lock().await;
-    if guard.processed_commands.contains(&command.command_id) {
-        info!(robot_id = config.robot_id, command_id = %command.command_id, "duplicate command ignored");
+    let is_duplicate = {
+        let mut guard = state.lock().await;
+        if guard.processed_commands.contains(&command.command_id) {
+            true
+        } else {
+            persist_processed_command(&config.processed_commands_path, command.command_id).await?;
+            guard.processed_commands.insert(command.command_id);
+            false
+        }
+    };
+
+    if is_duplicate {
+        info!(robot_id = config.robot_id, command_id = %command.command_id, "duplicate command acknowledged without re-execution");
+        publish_command_result(
+            client,
+            config,
+            &command,
+            "acknowledged",
+            "command_duplicate_acknowledged",
+        )
+        .await?;
         return Ok(());
     }
-    guard.apply_command(&command.command_type, &command.payload)?;
-    persist_processed_command(&config.processed_commands_path, command.command_id).await?;
-    guard.processed_commands.insert(command.command_id);
-    drop(guard);
 
     metrics.commands_processed.inc();
     publish_command_result(
@@ -246,12 +316,148 @@ async fn handle_command(
         "command_acknowledged",
     )
     .await?;
-    publish_command_result(client, config, &command, "running", "command_running").await?;
-    publish_telemetry(client, config, state, metrics).await?;
-    sleep(Duration::from_secs(2)).await;
-    publish_state(client, config, state).await?;
-    publish_command_result(client, config, &command, "completed", "command_completed").await?;
+
+    if command
+        .expires_at
+        .is_some_and(|expires_at| expires_at <= Utc::now())
+    {
+        publish_command_result(client, config, &command, "expired", "command_expired").await?;
+        return Ok(());
+    }
+
+    let applied = {
+        let mut guard = state.lock().await;
+        guard.apply_command(command.command_id, &command.command_type, &command.payload)
+    };
+
+    let applied = match applied {
+        Ok(applied) => applied,
+        Err(err) => {
+            publish_command_result_with_payload(
+                client,
+                config,
+                command.command_id,
+                "failed",
+                "command_failed",
+                json!({
+                    "command_type": command.command_type,
+                    "payload": command.payload,
+                    "error": err.to_string(),
+                }),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+
+    match applied {
+        AppliedCommand::Move {
+            overridden_command_id,
+        } => {
+            if let Some(overridden_command_id) = overridden_command_id {
+                publish_command_result_with_payload(
+                    client,
+                    config,
+                    overridden_command_id,
+                    "stopped",
+                    "command_stopped",
+                    json!({
+                        "command_type": "move",
+                        "reason": "overridden",
+                        "overridden_by": command.command_id,
+                    }),
+                )
+                .await?;
+            }
+
+            publish_command_result(client, config, &command, "running", "command_running").await?;
+            publish_state(client, config, state).await?;
+            spawn_move_completion_watcher(client.clone(), config.clone(), state.clone(), command);
+        }
+        AppliedCommand::SetVelocity => {
+            publish_command_result(client, config, &command, "running", "command_running").await?;
+            publish_state(client, config, state).await?;
+            publish_command_result(client, config, &command, "completed", "command_completed")
+                .await?;
+        }
+        AppliedCommand::Stop {
+            stop,
+            affected_move_command_id,
+        } => {
+            if let Some(affected_move_command_id) = affected_move_command_id {
+                let (status, event_type) = if stop {
+                    ("stopped", "command_stopped")
+                } else {
+                    ("running", "command_resumed")
+                };
+                publish_command_result_with_payload(
+                    client,
+                    config,
+                    affected_move_command_id,
+                    status,
+                    event_type,
+                    json!({
+                        "command_type": "move",
+                        "reason": if stop { "stop_command" } else { "resume_command" },
+                        "stop_command_id": command.command_id,
+                    }),
+                )
+                .await?;
+            }
+
+            publish_command_result(client, config, &command, "running", "command_running").await?;
+            publish_state(client, config, state).await?;
+            publish_command_result(client, config, &command, "completed", "command_completed")
+                .await?;
+        }
+    }
     Ok(())
+}
+
+fn spawn_move_completion_watcher(
+    client: AsyncClient,
+    config: Config,
+    state: Arc<Mutex<RobotState>>,
+    command: RobotCommandMessage,
+) {
+    tokio::spawn(async move {
+        let mut completion_interval = interval(config.robot_state_interval);
+        completion_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        loop {
+            completion_interval.tick().await;
+            let completed = {
+                let mut guard = state.lock().await;
+                if guard.take_completed_move_command(command.command_id) {
+                    true
+                } else if !guard.move_command_is_active(command.command_id) {
+                    return;
+                } else {
+                    false
+                }
+            };
+
+            if completed {
+                if let Err(err) = publish_command_result(
+                    &client,
+                    &config,
+                    &command,
+                    "completed",
+                    "command_completed",
+                )
+                .await
+                {
+                    warn!(
+                        robot_id = config.robot_id,
+                        command_id = %command.command_id,
+                        error = %err,
+                        "failed to publish move completion"
+                    );
+                }
+                return;
+            }
+        }
+    });
 }
 
 async fn publish_command_result(
@@ -261,15 +467,34 @@ async fn publish_command_result(
     status: &str,
     event_type: &str,
 ) -> anyhow::Result<()> {
-    let message = CommandResultMessage {
-        command_id: command.command_id,
-        robot_id: config.robot_id.clone(),
-        status: status.into(),
-        event_type: event_type.into(),
-        payload: json!({
+    publish_command_result_with_payload(
+        client,
+        config,
+        command.command_id,
+        status,
+        event_type,
+        json!({
             "command_type": command.command_type,
             "payload": command.payload,
         }),
+    )
+    .await
+}
+
+async fn publish_command_result_with_payload(
+    client: &AsyncClient,
+    config: &Config,
+    command_id: uuid::Uuid,
+    status: &str,
+    event_type: &str,
+    payload: serde_json::Value,
+) -> anyhow::Result<()> {
+    let message = CommandResultMessage {
+        command_id,
+        robot_id: config.robot_id.clone(),
+        status: status.into(),
+        event_type: event_type.into(),
+        payload,
         occurred_at: Utc::now(),
     };
     client

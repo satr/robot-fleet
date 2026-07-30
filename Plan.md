@@ -155,14 +155,15 @@ Use JSONB for the command payload.
 Use command statuses such as:
 
 ```text
-created
-sent
 acknowledged
 running
 completed
 failed
 expired
+stopped
 ```
+
+The backend creates commands with unique UUIDs and publishes them over MQTT to `robots/{robot_id}/commands`. The robot simulator persists each command UUID before publishing `acknowledged`; duplicate deliveries with the same UUID are acknowledged but not executed again.
 
 ### command_events
 

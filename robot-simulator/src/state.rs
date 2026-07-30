@@ -23,7 +23,21 @@ pub(crate) struct RobotState {
     pub(crate) current_mission: Option<String>,
     pub(crate) software_version: String,
     pub(crate) processed_commands: HashSet<Uuid>,
+    pub(crate) current_move_command_id: Option<Uuid>,
+    completed_move_commands: HashSet<Uuid>,
     motion_tick_seconds: f64,
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum AppliedCommand {
+    Move {
+        overridden_command_id: Option<Uuid>,
+    },
+    SetVelocity,
+    Stop {
+        stop: bool,
+        affected_move_command_id: Option<Uuid>,
+    },
 }
 
 impl RobotState {
@@ -43,33 +57,59 @@ impl RobotState {
             current_mission: None,
             software_version: "0.1.0".into(),
             processed_commands,
+            current_move_command_id: None,
+            completed_move_commands: HashSet::new(),
             motion_tick_seconds,
         }
     }
 
-    pub(crate) fn apply_command(&mut self, command_type: &str, payload: &Value) -> Result<()> {
+    pub(crate) fn apply_command(
+        &mut self,
+        command_id: Uuid,
+        command_type: &str,
+        payload: &Value,
+    ) -> Result<AppliedCommand> {
         match command_type {
             "move" => {
                 let (target_position_x, target_position_y) = parse_move_payload(payload)?;
+                let overridden_command_id = self
+                    .current_move_command_id
+                    .filter(|current| *current != command_id);
                 self.target_position_x = Some(target_position_x);
                 self.target_position_y = Some(target_position_y);
                 self.stop = false;
                 self.current_mission = Some("move".into());
+                self.current_move_command_id = Some(command_id);
                 self.update_motion_state();
+                Ok(AppliedCommand::Move {
+                    overridden_command_id,
+                })
             }
             "set_velocity" => {
                 let set_velocity = parse_set_velocity_payload(payload)?;
                 self.set_velocity = set_velocity;
                 self.update_motion_state();
+                Ok(AppliedCommand::SetVelocity)
             }
             "stop" => {
                 let stop = parse_stop_payload(payload)?;
                 self.stop = stop;
                 self.update_motion_state();
+                Ok(AppliedCommand::Stop {
+                    stop,
+                    affected_move_command_id: self.current_move_command_id,
+                })
             }
-            _ => {}
+            other => Err(anyhow!("unsupported command_type: {other}")),
         }
-        Ok(())
+    }
+
+    pub(crate) fn take_completed_move_command(&mut self, command_id: Uuid) -> bool {
+        self.completed_move_commands.remove(&command_id)
+    }
+
+    pub(crate) fn move_command_is_active(&self, command_id: Uuid) -> bool {
+        self.current_move_command_id == Some(command_id)
     }
 
     fn advance_motion(&mut self) {
@@ -97,6 +137,7 @@ impl RobotState {
             self.target_position_x = None;
             self.target_position_y = None;
             self.current_mission = None;
+            self.complete_current_move_command();
             return;
         }
 
@@ -115,6 +156,7 @@ impl RobotState {
             self.target_position_x = None;
             self.target_position_y = None;
             self.current_mission = None;
+            self.complete_current_move_command();
         }
     }
 
@@ -136,6 +178,7 @@ impl RobotState {
             self.target_position_x = None;
             self.target_position_y = None;
             self.current_mission = None;
+            self.complete_current_move_command();
             return;
         }
         self.direction_degrees = delta_y.atan2(delta_x).to_degrees().rem_euclid(360.0);
@@ -144,6 +187,12 @@ impl RobotState {
         } else {
             self.set_velocity
         };
+    }
+
+    fn complete_current_move_command(&mut self) {
+        if let Some(command_id) = self.current_move_command_id.take() {
+            self.completed_move_commands.insert(command_id);
+        }
     }
 
     pub(crate) async fn update_state(state: Arc<Mutex<Self>>, interval_duration: Duration) {
@@ -159,14 +208,48 @@ impl RobotState {
 }
 
 fn parse_move_payload(payload: &Value) -> Result<(f64, f64)> {
+    if let Some(target_position) = payload.get("target_position") {
+        if let Some(position) = target_position.as_array() {
+            if position.len() == 2 {
+                let target_position_x = position[0]
+                    .as_f64()
+                    .ok_or_else(|| anyhow!("target_position[0] must be numeric"))?;
+                let target_position_y = position[1]
+                    .as_f64()
+                    .ok_or_else(|| anyhow!("target_position[1] must be numeric"))?;
+                return Ok((target_position_x, target_position_y));
+            }
+        }
+
+        if let Some(position) = target_position.as_object() {
+            let target_position_x = position
+                .get("x")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| anyhow!("target_position.x must be numeric"))?;
+            let target_position_y = position
+                .get("y")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| anyhow!("target_position.y must be numeric"))?;
+            return Ok((target_position_x, target_position_y));
+        }
+    }
+
     let target_position_x = payload
         .get("target_position_x")
         .and_then(Value::as_f64)
-        .ok_or_else(|| anyhow!("move command payload must include numeric target_position_x"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "move command payload must include numeric target_position_x/target_position_y or target_position"
+            )
+        })?;
     let target_position_y = payload
         .get("target_position_y")
         .and_then(Value::as_f64)
-        .ok_or_else(|| anyhow!("move command payload must include numeric target_position_y"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "move command payload must include numeric target_position_x/target_position_y or target_position"
+            )
+        })?;
 
     Ok((target_position_x, target_position_y))
 }
@@ -198,7 +281,7 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::RobotState;
+    use super::{AppliedCommand, RobotState};
 
     #[test]
     fn duplicate_command_is_detected() {
@@ -213,10 +296,15 @@ mod tests {
     fn move_command_sets_target_and_uses_velocity() {
         let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
         state
-            .apply_command("set_velocity", &json!({ "set_velocity": 2 }))
+            .apply_command(
+                Uuid::new_v4(),
+                "set_velocity",
+                &json!({ "set_velocity": 2 }),
+            )
             .expect("set_velocity command");
         state
             .apply_command(
+                Uuid::new_v4(),
                 "move",
                 &json!({
                     "target_position_x": 10,
@@ -234,10 +322,60 @@ mod tests {
     }
 
     #[test]
+    fn move_command_accepts_target_position_object() {
+        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        state
+            .apply_command(
+                Uuid::new_v4(),
+                "move",
+                &json!({ "target_position": { "x": 3, "y": 4 } }),
+            )
+            .expect("move command");
+
+        assert_eq!(state.target_position_x, Some(3.0));
+        assert_eq!(state.target_position_y, Some(4.0));
+    }
+
+    #[test]
+    fn new_move_command_overrides_active_move() {
+        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let first_command_id = Uuid::new_v4();
+        let second_command_id = Uuid::new_v4();
+        state
+            .apply_command(
+                first_command_id,
+                "move",
+                &json!({ "target_position_x": 10, "target_position_y": 0 }),
+            )
+            .expect("first move command");
+
+        let applied = state
+            .apply_command(
+                second_command_id,
+                "move",
+                &json!({ "target_position_x": 20, "target_position_y": 0 }),
+            )
+            .expect("second move command");
+
+        assert_eq!(
+            applied,
+            AppliedCommand::Move {
+                overridden_command_id: Some(first_command_id)
+            }
+        );
+        assert_eq!(state.current_move_command_id, Some(second_command_id));
+        assert_eq!(state.target_position_x, Some(20.0));
+    }
+
+    #[test]
     fn set_velocity_command_updates_value_and_respects_bounds() {
         let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
         state
-            .apply_command("set_velocity", &json!({ "set_velocity": 1.5 }))
+            .apply_command(
+                Uuid::new_v4(),
+                "set_velocity",
+                &json!({ "set_velocity": 1.5 }),
+            )
             .expect("set_velocity command");
         assert_eq!(state.set_velocity, 1.5);
         assert_eq!(state.velocity, 0.0);
@@ -247,10 +385,15 @@ mod tests {
     fn stop_command_pauses_and_resumes_motion() {
         let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
         state
-            .apply_command("set_velocity", &json!({ "set_velocity": 4 }))
+            .apply_command(
+                Uuid::new_v4(),
+                "set_velocity",
+                &json!({ "set_velocity": 4 }),
+            )
             .expect("set_velocity command");
         state
             .apply_command(
+                Uuid::new_v4(),
                 "move",
                 &json!({
                     "target_position_x": 10,
@@ -260,13 +403,13 @@ mod tests {
             .expect("move command");
 
         state
-            .apply_command("stop", &json!({ "stop": true }))
+            .apply_command(Uuid::new_v4(), "stop", &json!({ "stop": true }))
             .expect("stop command");
         assert!(state.stop);
         assert_eq!(state.velocity, 0.0);
 
         state
-            .apply_command("stop", &json!({ "stop": false }))
+            .apply_command(Uuid::new_v4(), "stop", &json!({ "stop": false }))
             .expect("resume command");
         assert!(!state.stop);
         assert_eq!(state.velocity, 4.0);
@@ -276,10 +419,15 @@ mod tests {
     fn motion_advance_moves_toward_target() {
         let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
         state
-            .apply_command("set_velocity", &json!({ "set_velocity": 1 }))
+            .apply_command(
+                Uuid::new_v4(),
+                "set_velocity",
+                &json!({ "set_velocity": 1 }),
+            )
             .expect("set_velocity command");
         state
             .apply_command(
+                Uuid::new_v4(),
                 "move",
                 &json!({
                     "target_position_x": 2,

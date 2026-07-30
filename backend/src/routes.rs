@@ -148,24 +148,36 @@ async fn create_command(
 fn validate_command_request(request: &CreateCommandRequest) -> Result<(), ApiError> {
     match request.command_type.as_str() {
         "move" => {
-            let Some(_) = request
+            let has_xy = request
                 .payload
                 .get("target_position_x")
                 .and_then(|value| value.as_f64())
-            else {
-                return Err(ApiError::BadRequest(
-                    "move command requires numeric target_position_x and target_position_y".into(),
-                ));
-            };
-            let Some(_) = request
+                .is_some()
+                && request
+                    .payload
+                    .get("target_position_y")
+                    .and_then(|value| value.as_f64())
+                    .is_some();
+            let has_position_object = request
                 .payload
-                .get("target_position_y")
-                .and_then(|value| value.as_f64())
-            else {
+                .get("target_position")
+                .and_then(|value| Some((value.get("x")?.as_f64()?, value.get("y")?.as_f64()?)))
+                .is_some();
+            let has_position_array = request
+                .payload
+                .get("target_position")
+                .and_then(|value| value.as_array())
+                .is_some_and(|position| {
+                    position.len() == 2
+                        && position[0].as_f64().is_some()
+                        && position[1].as_f64().is_some()
+                });
+
+            if !(has_xy || has_position_object || has_position_array) {
                 return Err(ApiError::BadRequest(
-                    "move command requires numeric target_position_x and target_position_y".into(),
+                    "move command requires numeric target_position_x/target_position_y or target_position".into(),
                 ));
-            };
+            }
         }
         "set_velocity" => {
             let set_velocity = request
@@ -289,8 +301,17 @@ mod tests {
 
     #[test]
     fn command_status_transition_order_is_supported() {
-        let transitions = ["created", "acknowledged", "running", "completed"];
-        assert_eq!(transitions.last(), Some(&"completed"));
+        let transitions = [
+            "created",
+            "acknowledged",
+            "running",
+            "completed",
+            "failed",
+            "expired",
+            "stopped",
+        ];
+        assert!(transitions.contains(&"completed"));
+        assert!(transitions.contains(&"stopped"));
     }
 
     #[test]

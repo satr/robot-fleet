@@ -78,13 +78,15 @@ pub struct CommandResultMessage {
     pub occurred_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RobotCommandMessage {
     pub command_id: Uuid,
     pub robot_id: String,
     pub command_type: String,
     #[serde(default)]
     pub payload: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -120,6 +122,7 @@ impl From<&CommandResponse> for RobotCommandMessage {
             robot_id: command.robot_id.clone(),
             command_type: command.command_type.clone(),
             payload: command.payload.clone(),
+            expires_at: command.expires_at,
         }
     }
 }

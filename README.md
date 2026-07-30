@@ -21,7 +21,7 @@ flowchart LR
     Dashboard -->|REST| Backend
 ```
 
-Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards with position, set velocity, current velocity, and direction, and sends commands through the backend. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each robot persists processed command IDs for idempotency, so duplicate MQTT deliveries are ignored. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step. Grafana includes per-robot motion metrics for velocity and direction.
+Current implementation: the backend subscribes to robot MQTT telemetry/state/result topics, stores current robot state in PostgreSQL, stores historical telemetry in a TimescaleDB hypertable, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. The SvelteKit web app shows live robot cards with position, set velocity, current velocity, and direction, and sends commands through the backend. Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each simulator persists command IDs before acknowledgement for idempotency, reports every command lifecycle state over MQTT, and executes motion independently from MQTT command intake. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step. Grafana includes per-robot motion metrics for velocity and direction.
 
 ## Repository structure
 
@@ -145,14 +145,14 @@ websocket ws://localhost:8089/robots/stream
 curl http://localhost:8089/robots/robot-01/commands
 curl -X POST http://localhost:8089/robots/robot-01/commands \
   -H 'content-type: application/json' \
-  -d '{"command_type":"dock","payload":{"station":"A"}}'
+  -d '{"command_type":"move","payload":{"target_position":{"x":100,"y":50}}}'
 ```
 
-The backend assigns every command a unique `command_id`. Robots persist completed command IDs and ignore repeated deliveries of the same ID.
+The backend assigns every command a unique `command_id`. Robots persist command IDs before publishing `acknowledged`, so repeated MQTT deliveries of the same command are acknowledged but not executed again.
 
 Robot status in `GET /robots` and `GET /robots/{robot_id}` is computed from `last_seen_at`: `online` when the backend saw telemetry or state within 5 seconds, `stale` between 5 and 15 seconds, and `offline` after 15 seconds.
 
-The web app reads `GET /robots` for the initial snapshot and then listens to `GET /robots/stream` as a WebSocket for live robot updates. It sends `move` and `stop` commands through `POST /robots/{robot_id}/commands`. Offline robots can be deleted through `DELETE /robots/{robot_id}`.
+The web app reads `GET /robots` for the initial snapshot and then listens to `GET /robots/stream` as a WebSocket for live robot updates. It sends `move`, `set_velocity`, and `stop` commands through `POST /robots/{robot_id}/commands`. Offline robots can be deleted through `DELETE /robots/{robot_id}`.
 
 ## MQTT topics
 
@@ -170,10 +170,13 @@ Command messages sent by the backend to `robots/{robot_id}/commands` include the
 {
   "command_id": "uuid",
   "robot_id": "robot-01",
-  "command_type": "dock",
-  "payload": { "station": "A" }
+  "command_type": "move",
+  "payload": { "target_position": { "x": 100, "y": 50 } },
+  "expires_at": "2026-07-30T10:05:55Z"
 }
 ```
+
+Simulator command lifecycle states are published to `robots/{robot_id}/command-results` as `acknowledged`, `running`, `completed`, `failed`, `expired`, or `stopped`. `move` runs until the robot reaches the target at the current `set_velocity`; a later `move` overrides the active move and marks the prior move `stopped`. `set_velocity` can run while a move is active and immediately changes the operating velocity used by that move. `stop` with `true` pauses motion and reports the active move as `stopped`; `stop` with `false` resumes toward the last target position using the current set velocity.
 
 ## Configuration
 
@@ -201,7 +204,7 @@ PUBLIC_BACKEND_WS_URL
 - No authentication, authorization, TLS, or production hardening.
 - Kafka is provisioned and documented, but backend Kafka publishing is currently a logging placeholder.
 - Command delivery is at-least-once through MQTT with robot-side duplicate command suppression based on persisted unique command IDs.
-- The simulator uses simple random movement rather than realistic robot physics.
+- The simulator uses simple linear movement toward target positions rather than realistic robot physics.
 - The web app is intentionally minimal and does not include authentication, route protection, or a map visualization.
 - Grafana dashboard is intentionally minimal.
 
