@@ -146,15 +146,30 @@ async fn create_command(
 }
 
 fn command_topic(robot_id: &str, command_type: &str) -> String {
-    if command_type == "extream_temperature" {
-        format!("robots/{robot_id}/commands/high-priority")
+    if is_simulated_event_command(command_type) {
+        format!("robots/{robot_id}/simulated-events")
     } else {
         format!("robots/{robot_id}/commands")
     }
 }
 
+fn normalize_command_type(command_type: &str) -> String {
+    command_type
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
+}
+
+fn is_simulated_event_command(command_type: &str) -> bool {
+    matches!(
+        normalize_command_type(command_type).as_str(),
+        "extream_temperature" | "robot_stack"
+    )
+}
+
 fn validate_command_request(request: &CreateCommandRequest) -> Result<(), ApiError> {
-    match request.command_type.as_str() {
+    let command_type = normalize_command_type(&request.command_type);
+    match command_type.as_str() {
         "move" => {
             let has_xy = request
                 .payload
@@ -212,7 +227,7 @@ fn validate_command_request(request: &CreateCommandRequest) -> Result<(), ApiErr
                 ));
             }
         }
-        "extream_temperature" | "robot_stack" | "robot stack" => {}
+        "extream_temperature" | "robot_stack" => {}
         _ => {}
     }
 
@@ -358,10 +373,18 @@ mod tests {
     fn incident_commands_use_expected_topics() {
         assert_eq!(
             command_topic("robot-01", "extream_temperature"),
-            "robots/robot-01/commands/high-priority"
+            "robots/robot-01/simulated-events"
         );
         assert_eq!(
             command_topic("robot-01", "robot_stack"),
+            "robots/robot-01/simulated-events"
+        );
+        assert_eq!(
+            command_topic("robot-01", "Extream Temperature"),
+            "robots/robot-01/simulated-events"
+        );
+        assert_eq!(
+            command_topic("robot-01", "move"),
             "robots/robot-01/commands"
         );
     }

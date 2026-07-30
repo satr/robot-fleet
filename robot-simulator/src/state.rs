@@ -78,7 +78,8 @@ impl RobotState {
         command_type: &str,
         payload: &Value,
     ) -> Result<AppliedCommand> {
-        match command_type {
+        let normalized_command_type = normalize_command_type(command_type);
+        match normalized_command_type.as_str() {
             "move" => {
                 let (target_position_x, target_position_y) = parse_move_payload(payload)?;
                 let overridden_command_id = self
@@ -114,9 +115,7 @@ impl RobotState {
                 })
             }
             "extream_temperature" => Ok(self.start_simulated_event("extream_temperature", "high")),
-            "robot_stack" | "robot stack" => {
-                Ok(self.start_simulated_event("robot_stack", "normal"))
-            }
+            "robot_stack" => Ok(self.start_simulated_event("robot_stack", "normal")),
             other => Err(anyhow!("unsupported command_type: {other}")),
         }
     }
@@ -314,6 +313,13 @@ fn parse_move_payload(payload: &Value) -> Result<(f64, f64)> {
         })?;
 
     Ok((target_position_x, target_position_y))
+}
+
+fn normalize_command_type(command_type: &str) -> String {
+    command_type
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
 }
 
 fn parse_set_velocity_payload(payload: &Value) -> Result<f64> {
@@ -546,5 +552,23 @@ mod tests {
 
         assert_eq!(state.current_mission, None);
         assert_eq!(state.state, "idle in safe state");
+    }
+
+    #[test]
+    fn simulated_event_commands_accept_human_readable_names() {
+        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+
+        let applied = state
+            .apply_command(Uuid::new_v4(), "Robot Stack", &json!({}))
+            .expect("robot stack command");
+
+        assert_eq!(
+            applied,
+            AppliedCommand::SimulateEvent {
+                event_type: "robot_stack".into(),
+                priority: "normal".into(),
+                interrupted_move_command_id: None
+            }
+        );
     }
 }

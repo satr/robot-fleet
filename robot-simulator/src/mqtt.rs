@@ -59,7 +59,7 @@ pub(crate) async fn run_robot(
         }
         if let Err(err) = client
             .subscribe(
-                format!("robots/{}/commands/high-priority", config.robot_id),
+                format!("robots/{}/simulated-events", config.robot_id),
                 QoS::AtLeastOnce,
             )
             .await

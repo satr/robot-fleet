@@ -221,6 +221,10 @@
 
           <dl>
             <div>
+              <dt>Status</dt>
+              <dd>{robot.status}</dd>
+            </div>
+            <div>
               <dt>Battery</dt>
               <dd>{robot.battery_level.toFixed(1)}%</dd>
             </div>
@@ -254,7 +258,11 @@
             </div>
             <div>
               <dt>Current command</dt>
-              <dd>{robot.current_command ?? robot.current_mission ?? 'none'}</dd>
+              <dd>{robot.current_command ?? 'none'}</dd>
+            </div>
+            <div>
+              <dt>Current mission</dt>
+              <dd>{robot.current_mission ?? 'none'}</dd>
             </div>
             <div>
               <dt>Command status</dt>
@@ -263,36 +271,40 @@
           </dl>
 
           <div class="move-form" aria-label={`Move controls for ${robot.name}`}>
-            <label>
-              <span>Target X</span>
-              <input
-                type="number"
-                step="any"
-                value={moveFormFor(robot.robot_id).target_position_x}
-                on:input={(event) => updateMoveForm(robot.robot_id, 'target_position_x', (event.currentTarget as HTMLInputElement).value)}
-              />
-            </label>
-            <label>
-              <span>Target Y</span>
-              <input
-                type="number"
-                step="any"
-                value={moveFormFor(robot.robot_id).target_position_y}
-                on:input={(event) => updateMoveForm(robot.robot_id, 'target_position_y', (event.currentTarget as HTMLInputElement).value)}
-              />
-            </label>
-            <button disabled={pendingAction !== ''} on:click={() => sendMove(robot)}>Move</button>
-            <label>
-              <span>Set velocity</span>
-              <input
-                type="number"
-                step="any"
-                min="0.01"
-                value={moveFormFor(robot.robot_id).set_velocity}
-                on:input={(event) => updateMoveForm(robot.robot_id, 'set_velocity', (event.currentTarget as HTMLInputElement).value)}
-              />
-            </label>
-            <button disabled={pendingAction !== ''} on:click={() => sendSetVelocity(robot)}>Set velocity</button>
+            <div class="move-row move-row--target">
+              <label>
+                <span>Target X</span>
+                <input
+                  type="number"
+                  step="any"
+                  value={moveFormFor(robot.robot_id).target_position_x}
+                  on:input={(event) => updateMoveForm(robot.robot_id, 'target_position_x', (event.currentTarget as HTMLInputElement).value)}
+                />
+              </label>
+              <label>
+                <span>Target Y</span>
+                <input
+                  type="number"
+                  step="any"
+                  value={moveFormFor(robot.robot_id).target_position_y}
+                  on:input={(event) => updateMoveForm(robot.robot_id, 'target_position_y', (event.currentTarget as HTMLInputElement).value)}
+                />
+              </label>
+              <button disabled={pendingAction !== ''} on:click={() => sendMove(robot)}>Move</button>
+            </div>
+            <div class="move-row move-row--velocity">
+              <label>
+                <span>Set velocity</span>
+                <input
+                  type="number"
+                  step="any"
+                  min="0.01"
+                  value={moveFormFor(robot.robot_id).set_velocity}
+                  on:input={(event) => updateMoveForm(robot.robot_id, 'set_velocity', (event.currentTarget as HTMLInputElement).value)}
+                />
+              </label>
+              <button disabled={pendingAction !== ''} on:click={() => sendSetVelocity(robot)}>Set velocity</button>
+            </div>
           </div>
 
           <div class="controls" aria-label={`Controls for ${robot.name}`}>
@@ -485,6 +497,19 @@
     padding-top: 16px;
   }
 
+  .move-row {
+    display: grid;
+    gap: 12px;
+  }
+
+  .move-row--target {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+
+  .move-row--velocity {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
   .move-form label {
     display: grid;
     gap: 6px;
@@ -501,6 +526,7 @@
     border-radius: 10px;
     color: inherit;
     padding: 10px 12px;
+    min-width: 0;
   }
 
   .controls {
@@ -550,5 +576,12 @@
   button:disabled {
     cursor: not-allowed;
     opacity: 0.6;
+  }
+
+  @media (max-width: 720px) {
+    .move-row--target,
+    .move-row--velocity {
+      grid-template-columns: 1fr;
+    }
   }
 </style>
