@@ -236,23 +236,25 @@ async fn publish_state(
     config: &Config,
     state: &Arc<Mutex<RobotState>>,
 ) -> anyhow::Result<()> {
-    let guard = state.lock().await;
-    let message = StateMessage {
-        robot_id: config.robot_id.clone(),
-        name: config.robot_name.clone(),
-        status: if guard.online { "online" } else { "offline" }.into(),
-        battery_level: guard.battery_level,
-        position_x: guard.position_x,
-        position_y: guard.position_y,
-        set_velocity: guard.set_velocity,
-        velocity: guard.velocity,
-        direction_degrees: guard.direction_degrees,
-        stop: guard.stop,
-        target_position_x: guard.target_position_x,
-        target_position_y: guard.target_position_y,
-        current_mission: guard.current_mission.clone(),
-        software_version: guard.software_version.clone(),
-        recorded_at: Utc::now(),
+    let message = {
+        let guard = state.lock().await;
+        StateMessage {
+            robot_id: config.robot_id.clone(),
+            name: config.robot_name.clone(),
+            status: if guard.online { "online" } else { "offline" }.into(),
+            battery_level: guard.battery_level,
+            position_x: guard.position_x,
+            position_y: guard.position_y,
+            set_velocity: guard.set_velocity,
+            velocity: guard.velocity,
+            direction_degrees: guard.direction_degrees,
+            stop: guard.stop,
+            target_position_x: guard.target_position_x,
+            target_position_y: guard.target_position_y,
+            current_mission: guard.current_mission.clone(),
+            software_version: guard.software_version.clone(),
+            recorded_at: Utc::now(),
+        }
     };
     client
         .publish(
