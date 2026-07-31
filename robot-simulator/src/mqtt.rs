@@ -271,6 +271,7 @@ async fn handle_command(
     payload: &[u8],
 ) -> anyhow::Result<()> {
     let command: RobotCommandMessage = serde_json::from_slice(payload)?;
+    let command_id = command.command_id;
     if command.robot_id != config.robot_id {
         warn!(
             robot_id = config.robot_id,
@@ -281,10 +282,15 @@ async fn handle_command(
         return Ok(());
     }
 
-    if let Some(existing_record) = {
+    let existing_record = {
         let guard = state.lock().await;
         guard.processed_command(&command.command_id).cloned()
-    } {
+    };
+    let is_processing = {
+        let guard = state.lock().await;
+        guard.command_is_processing(command_id)
+    };
+    if let Some(existing_record) = &existing_record {
         if !existing_record.matches_command(&command) {
             let cancelled_record = existing_record.with_command_and_status(
                 &command,
@@ -318,64 +324,83 @@ async fn handle_command(
             return Ok(());
         }
 
-        let persisted_status = existing_record.status.duplicate_response();
-        if persisted_status != existing_record.status {
-            let updated_record = existing_record.with_status(persisted_status, Utc::now());
-            let records = {
-                let mut guard = state.lock().await;
-                guard.remember_processed_command(updated_record);
-                guard.processed_commands.clone()
+        let is_active_move = existing_record.status == ProcessedCommandStatus::Running
+            && normalize_command_type(&existing_record.command_type) == "move"
+            && {
+                let guard = state.lock().await;
+                guard.move_command_is_active(command_id)
             };
-            persist_processed_commands(&config.processed_commands_path, &records).await?;
-        }
+        let can_recover =
+            !existing_record.status.is_terminal() && !is_processing && !is_active_move;
+        if !can_recover {
+            let persisted_status = existing_record.status.duplicate_response();
+            if persisted_status != existing_record.status {
+                let updated_record = existing_record.with_status(persisted_status, Utc::now());
+                let records = {
+                    let mut guard = state.lock().await;
+                    guard.remember_processed_command(updated_record);
+                    guard.processed_commands.clone()
+                };
+                persist_processed_commands(&config.processed_commands_path, &records).await?;
+            }
 
-        info!(
-            robot_id = config.robot_id,
-            command_id = %command.command_id,
-            status = persisted_status.as_str(),
-            "duplicate command acknowledged without re-execution"
-        );
-        publish_command_result(
-            client,
-            config,
-            &command,
-            duplicate_publish_status(persisted_status),
-            duplicate_command_event_type(persisted_status),
-        )
-        .await?;
-        return Ok(());
+            info!(
+                robot_id = config.robot_id,
+                command_id = %command.command_id,
+                status = persisted_status.as_str(),
+                "duplicate command acknowledged without re-execution"
+            );
+            publish_command_result(
+                client,
+                config,
+                &command,
+                duplicate_publish_status(persisted_status),
+                duplicate_command_event_type(persisted_status),
+            )
+            .await?;
+            return Ok(());
+        }
     }
 
-    metrics.commands_processed.inc();
-
     if !should_track_processed_command(&command.command_type) {
+        metrics.commands_processed.inc();
         handle_simulated_event_command(client, config, state, metrics, &command).await?;
         return Ok(());
     }
 
-    let received_record =
-        ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, Utc::now());
-    let records = {
-        let mut guard = state.lock().await;
-        guard.remember_processed_command(received_record);
-        guard.processed_commands.clone()
-    };
-    persist_processed_commands(&config.processed_commands_path, &records).await?;
+    let is_new_command = existing_record.is_none();
+    if is_new_command {
+        metrics.commands_processed.inc();
+        let received_record =
+            ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, Utc::now());
+        let records = {
+            let mut guard = state.lock().await;
+            guard.remember_processed_command(received_record);
+            guard.processed_commands.clone()
+        };
+        persist_processed_commands(&config.processed_commands_path, &records).await?;
+    }
 
-    update_command_record_status(
-        state,
-        &config.processed_commands_path,
-        command.command_id,
-        ProcessedCommandStatus::Acknowledged,
-        Utc::now(),
-    )
-    .await?;
+    {
+        let mut guard = state.lock().await;
+        guard.start_processing_command(command_id);
+    }
+
     publish_command_result(
         client,
         config,
         &command,
         "acknowledged",
         "command_acknowledged",
+    )
+    .await?;
+
+    update_command_record_status(
+        state,
+        &config.processed_commands_path,
+        command_id,
+        ProcessedCommandStatus::Running,
+        Utc::now(),
     )
     .await?;
 
@@ -386,12 +411,16 @@ async fn handle_command(
         update_command_record_status(
             state,
             &config.processed_commands_path,
-            command.command_id,
+            command_id,
             ProcessedCommandStatus::Expired,
             Utc::now(),
         )
         .await?;
         publish_command_result(client, config, &command, "expired", "command_expired").await?;
+        {
+            let mut guard = state.lock().await;
+            guard.finish_processing_command(command_id);
+        }
         return Ok(());
     }
 
@@ -406,11 +435,15 @@ async fn handle_command(
             update_command_record_status(
                 state,
                 &config.processed_commands_path,
-                command.command_id,
+                command_id,
                 ProcessedCommandStatus::Failed,
                 Utc::now(),
             )
             .await?;
+            {
+                let mut guard = state.lock().await;
+                guard.finish_processing_command(command_id);
+            }
             publish_command_result_with_payload(
                 client,
                 config,
@@ -467,6 +500,10 @@ async fn handle_command(
             publish_command_result(client, config, &command, "running", "command_running").await?;
             publish_state(client, config, state).await?;
             spawn_move_completion_watcher(client.clone(), config.clone(), state.clone(), command);
+            {
+                let mut guard = state.lock().await;
+                guard.finish_processing_command(command_id);
+            }
         }
         AppliedCommand::SetVelocity => {
             update_command_record_status(
@@ -489,6 +526,10 @@ async fn handle_command(
             .await?;
             publish_command_result(client, config, &command, "completed", "command_completed")
                 .await?;
+            {
+                let mut guard = state.lock().await;
+                guard.finish_processing_command(command_id);
+            }
         }
         AppliedCommand::Stop {
             stop,
@@ -547,8 +588,16 @@ async fn handle_command(
             .await?;
             publish_command_result(client, config, &command, "completed", "command_completed")
                 .await?;
+            {
+                let mut guard = state.lock().await;
+                guard.finish_processing_command(command.command_id);
+            }
         }
         AppliedCommand::SimulateEvent { .. } => {
+            {
+                let mut guard = state.lock().await;
+                guard.finish_processing_command(command.command_id);
+            }
             return Err(anyhow!(
                 "simulated event commands must be handled without processed-command tracking"
             ));

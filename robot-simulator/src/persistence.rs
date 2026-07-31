@@ -36,6 +36,13 @@ impl ProcessedCommandStatus {
         }
     }
 
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Cancelled | Self::Completed | Self::Failed | Self::Expired | Self::Stopped
+        )
+    }
+
     pub(crate) fn duplicate_response(self) -> Self {
         match self {
             Self::Received | Self::Acknowledged => Self::Acknowledged,
@@ -74,6 +81,10 @@ pub(crate) struct ProcessedCommandRecord {
 }
 
 impl ProcessedCommandRecord {
+    pub(crate) fn needs_recovery(&self) -> bool {
+        !self.status.is_terminal()
+    }
+
     pub(crate) fn new(
         command: &RobotCommandMessage,
         status: ProcessedCommandStatus,
@@ -378,5 +389,16 @@ mod tests {
         let resumed = record.with_status(ProcessedCommandStatus::Resumed, Utc::now());
         assert_eq!(resumed.status, ProcessedCommandStatus::Resumed);
         assert!(resumed.resumed_at.is_some());
+    }
+
+    #[test]
+    fn unfinished_commands_need_recovery() {
+        let command_id = Uuid::new_v4();
+        let command = sample_command(command_id);
+        let record =
+            ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Acknowledged, Utc::now());
+        assert!(record.needs_recovery());
+        assert!(ProcessedCommandStatus::Completed.is_terminal());
+        assert!(ProcessedCommandStatus::Expired.is_terminal());
     }
 }

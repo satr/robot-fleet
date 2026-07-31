@@ -30,6 +30,7 @@ pub(crate) struct RobotState {
     pub(crate) state: String,
     pub(crate) software_version: String,
     pub(crate) processed_commands: HashMap<Uuid, ProcessedCommandRecord>,
+    processing_commands: HashSet<Uuid>,
     pub(crate) current_move_command_id: Option<Uuid>,
     completed_move_commands: HashSet<Uuid>,
     safe_state: bool,
@@ -74,6 +75,7 @@ impl RobotState {
             state: "idle".into(),
             software_version: "0.1.0".into(),
             processed_commands,
+            processing_commands: HashSet::new(),
             current_move_command_id: None,
             completed_move_commands: HashSet::new(),
             safe_state: false,
@@ -87,6 +89,18 @@ impl RobotState {
 
     pub(crate) fn remember_processed_command(&mut self, record: ProcessedCommandRecord) {
         self.processed_commands.insert(record.command_id, record);
+    }
+
+    pub(crate) fn start_processing_command(&mut self, command_id: Uuid) -> bool {
+        self.processing_commands.insert(command_id)
+    }
+
+    pub(crate) fn finish_processing_command(&mut self, command_id: Uuid) {
+        self.processing_commands.remove(&command_id);
+    }
+
+    pub(crate) fn command_is_processing(&self, command_id: Uuid) -> bool {
+        self.processing_commands.contains(&command_id)
     }
 
     pub(crate) fn apply_command(
