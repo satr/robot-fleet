@@ -401,4 +401,51 @@ mod tests {
         assert!(ProcessedCommandStatus::Completed.is_terminal());
         assert!(ProcessedCommandStatus::Expired.is_terminal());
     }
+
+    #[tokio::test]
+    async fn processed_commands_survive_restart_and_keep_duplicate_behavior() {
+        let command_id = Uuid::new_v4();
+        let path = std::env::temp_dir().join(format!(
+            "robot-simulator-processed-commands-restart-{command_id}.jsonl"
+        ));
+        let command = sample_command(command_id);
+        let running =
+            ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Running, Utc::now());
+        let completed = running.with_status(ProcessedCommandStatus::Completed, Utc::now());
+
+        let mut records = HashMap::new();
+        records.insert(command_id, running.clone());
+        persist_processed_commands(&path, &records)
+            .await
+            .expect("persist running command record");
+
+        let recovered = load_processed_commands(&path)
+            .await
+            .expect("load running command record");
+        let recovered = recovered
+            .get(&command_id)
+            .expect("recovered command record");
+        assert!(recovered.needs_recovery());
+        assert_eq!(recovered.status, ProcessedCommandStatus::Running);
+
+        records.insert(command_id, completed.clone());
+        persist_processed_commands(&path, &records)
+            .await
+            .expect("persist completed command record");
+
+        let restored = load_processed_commands(&path)
+            .await
+            .expect("load completed command record");
+        let restored = restored.get(&command_id).expect("restored command record");
+        assert!(!restored.needs_recovery());
+        assert_eq!(
+            restored.status.duplicate_response(),
+            ProcessedCommandStatus::Completed
+        );
+        assert!(restored.matches_command(&command));
+
+        tokio::fs::remove_file(path)
+            .await
+            .expect("remove processed commands test file");
+    }
 }

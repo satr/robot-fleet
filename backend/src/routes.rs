@@ -443,22 +443,6 @@ mod tests {
     }
 
     #[test]
-    fn command_status_transition_order_is_supported() {
-        let transitions = [
-            "created",
-            "publish_failed",
-            "acknowledged",
-            "running",
-            "completed",
-            "failed",
-            "expired",
-            "stopped",
-        ];
-        assert!(transitions.contains(&"completed"));
-        assert!(transitions.contains(&"stopped"));
-    }
-
-    #[test]
     fn command_creation_requires_type() {
         let request = CreateCommandRequest {
             command_type: "move".into(),

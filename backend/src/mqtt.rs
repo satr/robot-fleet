@@ -146,3 +146,224 @@ async fn deliver_commands(state: &AppState) -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use chrono::Utc;
+    use robot_fleet_common::types::CommandResultMessage;
+    use rumqttc::{AsyncClient, MqttOptions};
+    use serde_json::json;
+    use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+    use tokio::sync::OnceCell;
+    use uuid::Uuid;
+
+    use super::handle_mqtt_message;
+    use crate::{app::AppState, db, metrics::Metrics};
+
+    static TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
+
+    async fn test_state() -> Option<AppState> {
+        let database_url = std::env::var("DATABASE_URL").ok()?;
+        let pool = TEST_POOL
+            .get_or_init(|| async move {
+                let pool = PgPoolOptions::new()
+                    .max_connections(5)
+                    .connect(&database_url)
+                    .await
+                    .expect("connect to PostgreSQL");
+                sqlx::migrate!("./migrations")
+                    .run(&pool)
+                    .await
+                    .expect("run migrations");
+                pool
+            })
+            .await
+            .clone();
+        let metrics = Arc::new(Metrics::new().expect("metrics"));
+        let (mqtt, _) = AsyncClient::new(
+            MqttOptions::new(
+                format!("backend-test-{}", Uuid::new_v4()),
+                "localhost",
+                1883,
+            ),
+            1,
+        );
+
+        Some(AppState {
+            pool,
+            mqtt,
+            metrics,
+            robot_events: tokio::sync::broadcast::channel(16).0,
+        })
+    }
+
+    async fn command_row(
+        pool: &PgPool,
+        command_id: Uuid,
+    ) -> (
+        String,
+        Option<chrono::DateTime<Utc>>,
+        Option<chrono::DateTime<Utc>>,
+    ) {
+        let row = sqlx::query(
+            "SELECT status, acknowledged_at, completed_at
+             FROM commands
+             WHERE command_id = $1",
+        )
+        .bind(command_id)
+        .fetch_one(pool)
+        .await
+        .expect("command row");
+        (
+            row.get("status"),
+            row.get("acknowledged_at"),
+            row.get("completed_at"),
+        )
+    }
+
+    fn command_result(
+        command_id: Uuid,
+        robot_id: &str,
+        status: &str,
+        event_type: &str,
+        payload: serde_json::Value,
+    ) -> CommandResultMessage {
+        CommandResultMessage {
+            event_id: Uuid::new_v4(),
+            command_id,
+            robot_id: robot_id.into(),
+            status: status.into(),
+            event_type: event_type.into(),
+            payload,
+            occurred_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn mqtt_command_results_transition_and_ignore_duplicate_delivery() {
+        let Some(state) = test_state().await else {
+            return;
+        };
+
+        let robot_id = format!("robot-{}", Uuid::new_v4());
+        db::insert_placeholder_robot(&state.pool, &robot_id)
+            .await
+            .expect("insert placeholder robot");
+
+        let command = db::create_command(
+            &state.pool,
+            &robot_id,
+            "set_velocity",
+            &json!({ "set_velocity": 1.5 }),
+            None,
+        )
+        .await
+        .expect("create command");
+
+        let topic = format!("robots/{robot_id}/command-results");
+        let acknowledged = command_result(
+            command.command_id,
+            &robot_id,
+            "acknowledged",
+            "command_acknowledged",
+            json!({
+                "command_type": "set_velocity",
+                "payload": { "set_velocity": 1.5 }
+            }),
+        );
+        handle_mqtt_message(
+            &state,
+            &topic,
+            &serde_json::to_vec(&acknowledged).expect("serialize command result"),
+        )
+        .await
+        .expect("handle acknowledged command result");
+
+        let (status, acknowledged_at, completed_at) =
+            command_row(&state.pool, command.command_id).await;
+        assert_eq!(status, "acknowledged");
+        assert!(acknowledged_at.is_some());
+        assert!(completed_at.is_none());
+
+        let running = command_result(
+            command.command_id,
+            &robot_id,
+            "running",
+            "command_running",
+            json!({
+                "command_type": "set_velocity",
+                "payload": { "set_velocity": 1.5 }
+            }),
+        );
+        handle_mqtt_message(
+            &state,
+            &topic,
+            &serde_json::to_vec(&running).expect("serialize command result"),
+        )
+        .await
+        .expect("handle running command result");
+
+        let (status, acknowledged_at, completed_at) =
+            command_row(&state.pool, command.command_id).await;
+        assert_eq!(status, "running");
+        assert!(acknowledged_at.is_some());
+        assert!(completed_at.is_none());
+
+        let completed = command_result(
+            command.command_id,
+            &robot_id,
+            "completed",
+            "command_completed",
+            json!({
+                "command_type": "set_velocity",
+                "payload": { "set_velocity": 1.5 }
+            }),
+        );
+        handle_mqtt_message(
+            &state,
+            &topic,
+            &serde_json::to_vec(&completed).expect("serialize command result"),
+        )
+        .await
+        .expect("handle completed command result");
+
+        let (status, acknowledged_at, completed_at) =
+            command_row(&state.pool, command.command_id).await;
+        assert_eq!(status, "completed");
+        assert!(acknowledged_at.is_some());
+        assert!(completed_at.is_some());
+
+        let duplicate_completed = CommandResultMessage {
+            event_id: completed.event_id,
+            command_id: completed.command_id,
+            robot_id: completed.robot_id,
+            status: completed.status,
+            event_type: completed.event_type,
+            payload: completed.payload,
+            occurred_at: completed.occurred_at,
+        };
+        handle_mqtt_message(
+            &state,
+            &topic,
+            &serde_json::to_vec(&duplicate_completed).expect("serialize duplicate command result"),
+        )
+        .await
+        .expect("handle duplicate command result");
+
+        let (status, acknowledged_at, completed_at) =
+            command_row(&state.pool, command.command_id).await;
+        assert_eq!(status, "completed");
+        assert!(acknowledged_at.is_some());
+        assert!(completed_at.is_some());
+
+        let event_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM command_events WHERE command_id = $1")
+                .bind(command.command_id)
+                .fetch_one(&state.pool)
+                .await
+                .expect("count command events");
+        assert_eq!(event_count, 3);
+    }
+}

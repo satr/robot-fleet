@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: robot_fleet
+          POSTGRES_PASSWORD: robot_fleet
+          POSTGRES_DB: robot_fleet
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U robot_fleet -d robot_fleet"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      mqtt:
+        image: eclipse-mosquitto:2
+        ports:
+          - 1883:1883
+        options: >-
+          --health-cmd="mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -W 3 >/dev/null 2>&1 || exit 1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+
+    env:
+      DATABASE_URL: postgres://robot_fleet:robot_fleet@localhost:5432/robot_fleet
+      MQTT_URL: mqtt://localhost:1883
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Wait for services
+        run: |
+          until pg_isready -h localhost -p 5432 -U robot_fleet -d robot_fleet >/dev/null 2>&1; do sleep 1; done
+          until docker exec "${{ job.services.mqtt.id }}" sh -c "mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -W 3 >/dev/null 2>&1"; do sleep 1; done
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace -- --test-threads=1
