@@ -8,14 +8,13 @@ use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use crate::{db, kafka::KafkaPublisher, metrics::Metrics, mqtt, routes};
+use crate::{db, metrics::Metrics, mqtt, routes};
 
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) pool: PgPool,
     pub(crate) mqtt: AsyncClient,
     pub(crate) metrics: Arc<Metrics>,
-    pub(crate) kafka: KafkaPublisher,
     pub(crate) robot_events: broadcast::Sender<RobotStreamMessage>,
 }
 
@@ -31,7 +30,6 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         "postgres://robot_fleet:robot_fleet@localhost:5432/robot_fleet",
     );
     let mqtt_url = env_or("MQTT_URL", "mqtt://localhost:1883");
-    let kafka_brokers = env_or("KAFKA_BROKERS", "localhost:9092");
     let http_port: u16 = env_or("HTTP_PORT", "8089")
         .parse()
         .context("HTTP_PORT must be a port")?;
@@ -46,7 +44,6 @@ pub(crate) async fn run() -> anyhow::Result<()> {
         pool,
         mqtt: mqtt_client,
         metrics,
-        kafka: KafkaPublisher::new(kafka_brokers),
         robot_events,
     };
 

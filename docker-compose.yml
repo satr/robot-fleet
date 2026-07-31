@@ -33,46 +33,6 @@ services:
       timeout: 5s
       retries: 10
 
-  kafka:
-    image: apache/kafka:latest
-    container_name: robot-fleet-kafka
-    restart: unless-stopped
-    ports:
-      - "9092:9092"
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_LOG_DIRS: /tmp/kafka-logs
-      KAFKA_NUM_PARTITIONS: 1
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 10s
-      retries: 20
-    volumes:
-      - ./data/kafka:/tmp/kafka-logs
-
-  kafka-init:
-    image: apache/kafka:latest
-    container_name: robot-fleet-kafka-init
-    restart: "no"
-    command: ["/bin/sh", "/scripts/create-topics.sh"]
-    volumes:
-      - ./infrastructure/kafka/create-topics.sh:/scripts/create-topics.sh:ro
-    depends_on:
-      kafka:
-        condition: service_healthy
-
   backend:
     build:
       context: .
@@ -82,7 +42,6 @@ services:
     environment:
       DATABASE_URL: postgres://robot_fleet:robot_fleet@postgres-timescaledb:5432/robot_fleet
       MQTT_URL: mqtt://mqtt:1883
-      KAFKA_BROKERS: kafka:9092
       RUST_LOG: ${RUST_LOG:-info}
       HTTP_PORT: 8089
     ports:
@@ -92,10 +51,6 @@ services:
         condition: service_healthy
       mqtt:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
-      kafka-init:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:8089/health >/dev/null || exit 1"]
       interval: 10s

@@ -1,7 +1,6 @@
 mod app;
 mod db;
 mod error;
-mod kafka;
 mod metrics;
 mod mqtt;
 mod routes;

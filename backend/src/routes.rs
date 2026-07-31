@@ -312,7 +312,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{kafka::KafkaPublisher, metrics::Metrics};
+    use crate::{metrics::Metrics};
 
     fn test_state() -> AppState {
         let metrics = Arc::new(Metrics::new().expect("metrics"));
@@ -324,7 +324,6 @@ mod tests {
                 .expect("lazy pool"),
             mqtt,
             metrics,
-            kafka: KafkaPublisher::new("localhost:9092".into()),
             robot_events: tokio::sync::broadcast::channel(16).0,
         }
     }

@@ -1,6 +1,6 @@
 # Robot Fleet
 
-Robot Fleet is a small learning project for building a robot fleet-management platform one piece at a time. It includes a Rust backend, a SvelteKit web app, simulated robots, MQTT, Kafka, PostgreSQL with TimescaleDB, Prometheus, VictoriaMetrics, Grafana, Docker Compose, and a Makefile.
+Robot Fleet is a small learning project for building a robot fleet-management platform one piece at a time. It includes a Rust backend, a SvelteKit web app, simulated robots, MQTT, PostgreSQL with TimescaleDB, Prometheus, VictoriaMetrics, Grafana, Docker Compose, and a Makefile.
 
 The first version intentionally favors readability over production completeness.
 
@@ -11,10 +11,7 @@ flowchart LR
     Robots -->|MQTT telemetry and events| MQTT
     Backend -->|MQTT commands| MQTT
     MQTT --> Backend
-    Backend --> Kafka
     Backend --> PostgreSQL
-    Kafka --> TelemetryConsumer
-    TelemetryConsumer --> TimescaleDB
     WebApp -->|REST and WebSocket| Backend
     Prometheus --> Backend
     Prometheus --> VictoriaMetrics
@@ -27,7 +24,7 @@ Current implementation: the backend subscribes to robot MQTT telemetry/state/res
 
 ![Web app dashboard](img/robot-fleet-dashboard.png)
 
-Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each simulator persists command IDs before acknowledgement for idempotency, reports every command lifecycle state over MQTT, executes motion independently from MQTT command intake, and can simulate sensor incidents. Kafka is included and represented by a backend publishing hook; direct Kafka producer integration is a planned next step. Grafana includes per-robot motion metrics for velocity/direction and bar charts for simulated sensor events.
+Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each simulator persists command IDs before acknowledgement for idempotency, reports every command lifecycle state over MQTT, executes motion independently from MQTT command intake, and can simulate sensor incidents. Grafana includes per-robot motion metrics for velocity/direction and bar charts for simulated sensor events.
 
 ![Grafana dashboard](img/robot-fleet-grafana.png)
 
@@ -118,7 +115,6 @@ Stateful container data is stored in `data/` on the host:
 
 - `data/postgres/`
 - `data/mqtt/`
-- `data/kafka/`
 - `data/victoriametrics/`
 - `data/grafana/`
 - `data/robots/robot-01/`
@@ -145,7 +141,6 @@ vmalert:    http://localhost:8880
 VictoriaMetrics: http://localhost:8428
 MQTT:       localhost:1883
 PostgreSQL: localhost:5432
-Kafka:      localhost:9092
 ```
 
 ## API examples
@@ -202,7 +197,6 @@ Copy `.env.example` to `.env` for local overrides. Main variables:
 ```text
 DATABASE_URL
 MQTT_URL
-KAFKA_BROKERS
 RUST_LOG
 HTTP_PORT
 ROBOT_ID
@@ -219,7 +213,6 @@ PUBLIC_BACKEND_WS_URL
 ## Current limitations
 
 - No authentication, authorization, TLS, or production hardening.
-- Kafka is provisioned and documented, but backend Kafka publishing is currently a logging placeholder.
 - Command delivery is at-least-once through MQTT with robot-side duplicate command suppression based on persisted unique command IDs.
 - The simulator uses simple linear movement toward target positions rather than realistic robot physics.
 - The web app is intentionally minimal and does not include authentication, route protection, or a map visualization.
@@ -227,7 +220,7 @@ PUBLIC_BACKEND_WS_URL
 
 ## Planned course extensions
 
-- Real Kafka producer/consumer flow after MQTT ingestion.
+- Kafka producer/consumer flow after MQTT ingestion.
 - Dedicated telemetry consumers and richer TimescaleDB queries.
 - Command expiry and retries.
 - Observability improvements and alerting.

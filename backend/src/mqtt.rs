@@ -106,44 +106,23 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
             .metrics
             .telemetry_lag_seconds
             .set((Utc::now() - message.recorded_at).num_milliseconds().max(0) as f64 / 1000.0);
-        state.kafka.publish_telemetry(&message).await?;
     } else if topic.ends_with("/state") {
         let message: StateMessage = serde_json::from_slice(payload)?;
         db::upsert_robot_state(state, &message).await?;
         db::refresh_robot_status_metrics(state).await?;
         app::broadcast_robot_update(state, &message.robot_id).await;
-        state
-            .kafka
-            .publish(
-                "robot-state-events",
-                &message.robot_id,
-                &serde_json::to_value(&message)?,
-            )
-            .await;
     } else if topic.ends_with("/command-results") {
         let message: CommandResultMessage = serde_json::from_slice(payload)?;
         db::apply_command_result(state, &message).await?;
         app::broadcast_robot_update(state, &message.robot_id).await;
-        state
-            .kafka
-            .publish(
-                "robot-command-events",
-                &message.robot_id,
-                &serde_json::to_value(&message)?,
-            )
-            .await;
+    } else if topic.ends_with("/command-results") {
+        let message: CommandResultMessage = serde_json::from_slice(payload)?;
+        db::apply_command_result(state, &message).await?;
+        app::broadcast_robot_update(state, &message.robot_id).await;
     } else if topic.ends_with("/events") || topic.ends_with("/events/high-priority") {
         let message: RobotSensorEventMessage = serde_json::from_slice(payload)?;
         db::insert_robot_sensor_event(state, &message).await?;
         app::broadcast_robot_update(state, &message.robot_id).await;
-        state
-            .kafka
-            .publish(
-                "robot-sensor-events",
-                &message.robot_id,
-                &serde_json::to_value(&message)?,
-            )
-            .await;
     }
     Ok(())
 }

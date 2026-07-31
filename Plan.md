@@ -4,7 +4,6 @@ Docker Compose stateful services use host folders under `data/` so container sto
 
 - `data/postgres/` for PostgreSQL / TimescaleDB (Postgres stores its cluster in `data/postgres/data/`);
 - `data/mqtt/` for Mosquitto persistence;
-- `data/kafka/` for Kafka log segments;
 - `data/prometheus/` for Prometheus TSDB data;
 - `data/grafana/` for Grafana dashboards, users, and provisioning state;
 - `data/robots/robot-01/`, `data/robots/robot-02/`, `data/robots/robot-03/` for simulator command-history files.
@@ -19,7 +18,6 @@ This repository is intended for hands-on learning and will be gradually extended
 
 * robot-to-cloud communication;
 * MQTT;
-* Kafka;
 * PostgreSQL and TimescaleDB;
 * Rust backend development;
 * command delivery and acknowledgements;
@@ -37,7 +35,6 @@ The project must contain:
 
 * a backend written in Rust;
 * PostgreSQL with the TimescaleDB extension;
-* Kafka;
 * an MQTT broker;
 * Prometheus;
 * Grafana;
@@ -70,7 +67,6 @@ robot-fleet/
 ├── infrastructure/
 │   ├── postgres/
 │   │   └── init/
-│   ├── kafka/
 │   ├── mqtt/
 │   │   └── mosquitto.conf
 │   ├── prometheus/
@@ -237,33 +233,7 @@ command_type
 payload
 ```
 
-## Kafka
-
-Kafka must be included in Docker Compose, but keep its initial use minimal.
-
-Use Kafka as an internal event stream after MQTT ingestion.
-
-Create initial topics such as:
-
-```text
-robot-telemetry
-robot-state-events
-robot-command-events
-robot-emergency-events
-```
-
-The expected flow is:
-
-```text
-Robot
-  -> MQTT
-  -> Rust backend ingestion
-  -> Kafka
-  -> consumers
-  -> PostgreSQL or TimescaleDB
-```
-
-For the first implementation, it is acceptable for the backend to both publish to Kafka and persist directly to PostgreSQL, provided this temporary simplification is clearly documented.
+For the first implementation, it is acceptable for the backend to persist directly to PostgreSQL, provided this temporary simplification is clearly documented.
 
 Keep emergency events separate from normal telemetry.
 
@@ -413,14 +383,9 @@ robot-02
 robot-03
 postgres-timescaledb
 mqtt
-kafka
 prometheus
 grafana
 ```
-
-Add Kafka dependencies required by the selected Kafka image.
-
-Prefer a modern Kafka setup that does not require ZooKeeper when practical.
 
 Add:
 
@@ -470,7 +435,7 @@ Expected behaviour:
 make infra-up
 ```
 
-Starts PostgreSQL, TimescaleDB, MQTT, Kafka, Prometheus and Grafana.
+Starts PostgreSQL, TimescaleDB, MQTT, Prometheus and Grafana.
 
 ```text
 make backend-run
@@ -511,7 +476,6 @@ Backend configuration should include:
 ```text
 DATABASE_URL
 MQTT_URL
-KAFKA_BROKERS
 RUST_LOG
 HTTP_PORT
 ```
@@ -557,7 +521,7 @@ Do not use `unwrap()` in normal runtime paths.
 
 Return meaningful errors.
 
-The system should wait for or retry connections to PostgreSQL, MQTT and Kafka during local startup instead of exiting immediately because another container is still starting.
+The system should wait for or retry connections to PostgreSQL and MQTT during local startup instead of exiting immediately because another container is still starting.
 
 ## Tests
 
@@ -597,9 +561,7 @@ flowchart LR
     Robots -->|MQTT telemetry and events| MQTT
     Backend -->|MQTT commands| MQTT
     MQTT --> Backend
-    Backend --> Kafka
     Backend --> PostgreSQL
-    Kafka --> TelemetryConsumer
     TelemetryConsumer --> TimescaleDB
     WebApp -->|REST and WebSocket| Backend
     Prometheus --> Backend
@@ -632,7 +594,6 @@ Do not add yet:
 * a real frontend;
 * full event sourcing;
 * schema registry;
-* production Kafka tuning;
 * complex domain-driven design;
 * multiple backend microservices.
 
@@ -675,7 +636,7 @@ The initial task is complete when:
 
 Implement this incrementally.
 
-Start by creating the repository structure, Docker Compose infrastructure, database migrations, minimal backend health endpoint and one working robot simulator. Then add command handling, persistence, Kafka integration and monitoring.
+Start by creating the repository structure, Docker Compose infrastructure, database migrations, minimal backend health endpoint and one working robot simulator. Then add command handling, persistence, and monitoring.
 
 After implementation, provide:
 
@@ -683,5 +644,3 @@ After implementation, provide:
 * exact commands to run the project;
 * known limitations;
 * recommended next learning step.
-
-One practical adjustment: allow Copilot to introduce Kafka after the basic MQTT-to-PostgreSQL flow works. This keeps the first runnable milestone small without removing Kafka from the target architecture.

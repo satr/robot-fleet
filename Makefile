@@ -6,7 +6,6 @@ TELEMETRY_INTERVAL_SECONDS ?= 5
 ROBOT_STATE_INTERVAL_SECONDS ?= 1
 MQTT_URL ?= mqtt://localhost:1883
 DATABASE_URL ?= postgres://robot_fleet:robot_fleet@localhost:5432/robot_fleet
-KAFKA_BROKERS ?= localhost:9092
 RUST_LOG ?= info
 PROCESSED_COMMANDS_PATH ?= data/robots/$(ROBOT_ID)/processed_commands.txt
 WEB_PORT ?= 5173
@@ -17,7 +16,7 @@ PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
 
 help:
 	@echo "Robot Fleet commands:"
-	@echo "  make infra-up       Start Postgres/TimescaleDB, MQTT, Kafka, Prometheus, VictoriaMetrics, vmalert, Alertmanager, Grafana"
+	@echo "  make infra-up       Start Postgres/TimescaleDB, MQTT, Prometheus, VictoriaMetrics, vmalert, Alertmanager, Grafana"
 	@echo "  make infra-down     Stop infrastructure services"
 	@echo "  make infra-logs     Follow infrastructure logs"
 	@echo "  make db-migrate     Run backend SQLx migrations"
@@ -45,13 +44,13 @@ help:
 	@echo "  make clean          Remove build artifacts"
 
 infra-up:
-	docker compose up -d postgres-timescaledb mqtt kafka kafka-init victoriametrics alertmanager vmalert prometheus grafana
+	docker compose up -d postgres-timescaledb mqtt victoriametrics alertmanager vmalert prometheus grafana
 
 infra-down:
-	docker compose stop postgres-timescaledb mqtt kafka victoriametrics alertmanager vmalert prometheus grafana
+	docker compose stop postgres-timescaledb mqtt victoriametrics alertmanager vmalert prometheus grafana
 
 infra-logs:
-	docker compose logs -f postgres-timescaledb mqtt kafka kafka-init victoriametrics alertmanager vmalert prometheus grafana
+	docker compose logs -f postgres-timescaledb mqtt victoriametrics alertmanager vmalert prometheus grafana
 
 db-migrate:
 	docker compose up -d postgres-timescaledb
@@ -61,7 +60,7 @@ db-migrate:
 	cd backend && DATABASE_URL="$(DATABASE_URL)" cargo sqlx migrate run
 
 backend-run:
-	DATABASE_URL="$(DATABASE_URL)" MQTT_URL="$(MQTT_URL)" KAFKA_BROKERS="$(KAFKA_BROKERS)" RUST_LOG="$(RUST_LOG)" cargo run -p robot-fleet-backend
+	DATABASE_URL="$(DATABASE_URL)" MQTT_URL="$(MQTT_URL)" RUST_LOG="$(RUST_LOG)" cargo run -p robot-fleet-backend
 
 backend-stop-dev:
 	pkill -f 'robot-fleet-backend'

@@ -8,7 +8,6 @@ data/*
 !data/.gitkeep
 !data/postgres/.gitkeep
 !data/mqtt/.gitkeep
-!data/kafka/.gitkeep
 !data/prometheus/.gitkeep
 !data/victoriametrics/.gitkeep
 !data/grafana/.gitkeep
