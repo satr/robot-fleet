@@ -10,7 +10,7 @@ use robot_fleet_common::{
     },
 };
 use serde_json::Value;
-use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use sqlx::{postgres::PgPoolOptions, PgPool, Postgres, Row, Transaction};
 use tokio::time::sleep;
 use tracing::warn;
 use uuid::Uuid;
@@ -424,6 +424,7 @@ pub(crate) async fn apply_command_result(
     state: &AppState,
     message: &CommandResultMessage,
 ) -> anyhow::Result<()> {
+    let mut tx = state.pool.begin().await?;
     let inserted = sqlx::query(
         "INSERT INTO command_events (event_id, command_id, robot_id, event_type, payload, occurred_at)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -435,7 +436,7 @@ pub(crate) async fn apply_command_result(
     .bind(&message.event_type)
     .bind(&message.payload)
     .bind(message.occurred_at)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await?
     .rows_affected()
         == 1;
@@ -444,75 +445,103 @@ pub(crate) async fn apply_command_result(
         return Ok(());
     }
 
-    match message.status.as_str() {
-        "acknowledged" => {
-            sqlx::query(
-                "UPDATE commands
-                 SET status = CASE
-                         WHEN status IN ('created', 'acknowledged') THEN 'acknowledged'
-                         ELSE status
-                     END,
-                     acknowledged_at = COALESCE(acknowledged_at, $2)
-                 WHERE command_id = $1",
-            )
-            .bind(message.command_id)
-            .bind(message.occurred_at)
-            .execute(&state.pool)
-            .await?;
+    let status_applied = match message.status.as_str() {
+        "acknowledged" => sqlx::query(
+            "UPDATE commands
+             SET status = CASE
+                     WHEN status IN ('created', 'acknowledged') THEN 'acknowledged'
+                     ELSE status
+                 END,
+                 acknowledged_at = COALESCE(acknowledged_at, $2)
+             WHERE command_id = $1
+               AND status NOT IN ('completed', 'failed', 'expired')",
+        )
+        .bind(message.command_id)
+        .bind(message.occurred_at)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0,
+        "completed" => sqlx::query(
+            "UPDATE commands
+             SET status = 'completed',
+                 completed_at = COALESCE(completed_at, $2)
+             WHERE command_id = $1
+               AND status NOT IN ('completed', 'failed', 'expired')",
+        )
+        .bind(message.command_id)
+        .bind(message.occurred_at)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0,
+        "failed" | "expired" => sqlx::query(
+            "UPDATE commands
+             SET status = $2,
+                 completed_at = COALESCE(completed_at, $3)
+             WHERE command_id = $1
+               AND status NOT IN ('completed', 'failed', 'expired')",
+        )
+        .bind(message.command_id)
+        .bind(&message.status)
+        .bind(message.occurred_at)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0,
+        "stopped" => sqlx::query(
+            "UPDATE commands
+             SET status = CASE
+                     WHEN status NOT IN ('completed', 'failed', 'expired') THEN 'stopped'
+                     ELSE status
+                 END
+             WHERE command_id = $1
+               AND status NOT IN ('completed', 'failed', 'expired')",
+        )
+        .bind(message.command_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0,
+        "running" => sqlx::query(
+            "UPDATE commands
+             SET status = CASE
+                     WHEN status IN ('created', 'acknowledged', 'running') THEN 'running'
+                     ELSE status
+                 END
+             WHERE command_id = $1
+               AND status NOT IN ('completed', 'failed', 'expired')",
+        )
+        .bind(message.command_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected()
+            > 0,
+        other => {
+            warn!(
+                robot_id = message.robot_id,
+                command_id = %message.command_id,
+                status = other,
+                "unknown command status"
+            );
+            false
         }
-        "completed" => {
-            sqlx::query("UPDATE commands SET status = 'completed', completed_at = COALESCE(completed_at, $2) WHERE command_id = $1")
-                .bind(message.command_id)
-                .bind(message.occurred_at)
-                .execute(&state.pool)
-                .await?;
-            state.metrics.commands_completed.inc();
+    };
+
+    if status_applied {
+        if let Some(projection) = command_state_projection(message) {
+            apply_command_state_projection(&mut tx, &message.robot_id, projection).await?;
         }
-        "failed" | "expired" => {
-            sqlx::query("UPDATE commands SET status = $2, completed_at = COALESCE(completed_at, $3) WHERE command_id = $1")
-                .bind(message.command_id)
-                .bind(&message.status)
-                .bind(message.occurred_at)
-                .execute(&state.pool)
-                .await?;
-            state.metrics.command_failures.inc();
-        }
-        "stopped" => {
-            sqlx::query(
-                "UPDATE commands
-                 SET status = CASE
-                         WHEN status NOT IN ('completed', 'failed', 'expired') THEN 'stopped'
-                         ELSE status
-                     END
-                 WHERE command_id = $1",
-            )
-            .bind(message.command_id)
-            .execute(&state.pool)
-            .await?;
-        }
-        "running" => {
-            sqlx::query(
-                "UPDATE commands
-                 SET status = CASE
-                         WHEN status IN ('created', 'acknowledged', 'running') THEN 'running'
-                         ELSE status
-                     END
-                 WHERE command_id = $1",
-            )
-            .bind(message.command_id)
-            .execute(&state.pool)
-            .await?;
-        }
-        other => warn!(
-            robot_id = message.robot_id,
-            command_id = %message.command_id,
-            status = other,
-            "unknown command status"
-        ),
     }
 
-    if let Some(projection) = command_state_projection(message) {
-        apply_command_state_projection(state, &message.robot_id, projection).await?;
+    tx.commit().await?;
+
+    if status_applied {
+        match message.status.as_str() {
+            "completed" => state.metrics.commands_completed.inc(),
+            "failed" | "expired" => state.metrics.command_failures.inc(),
+            _ => {}
+        }
     }
     Ok(())
 }
@@ -556,7 +585,7 @@ fn command_state_projection(message: &CommandResultMessage) -> Option<CommandSta
 }
 
 async fn apply_command_state_projection(
-    state: &AppState,
+    tx: &mut Transaction<'_, Postgres>,
     robot_id: &str,
     projection: CommandStateProjection,
 ) -> Result<(), sqlx::Error> {
@@ -570,7 +599,7 @@ async fn apply_command_state_projection(
             )
             .bind(robot_id)
             .bind(set_velocity)
-            .execute(&state.pool)
+            .execute(&mut **tx)
             .await?;
         }
         CommandStateProjection::Move {
@@ -592,7 +621,7 @@ async fn apply_command_state_projection(
                 .bind(robot_id)
                 .bind(target_position_x)
                 .bind(target_position_y)
-                .execute(&state.pool)
+                .execute(&mut **tx)
                 .await?;
             }
         }
@@ -606,7 +635,7 @@ async fn apply_command_state_projection(
             )
             .bind(robot_id)
             .bind(stop)
-            .execute(&state.pool)
+            .execute(&mut **tx)
             .await?;
         }
     }
