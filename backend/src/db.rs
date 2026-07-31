@@ -424,19 +424,25 @@ pub(crate) async fn apply_command_result(
     state: &AppState,
     message: &CommandResultMessage,
 ) -> anyhow::Result<()> {
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO command_events (event_id, command_id, robot_id, event_type, payload, occurred_at)
          VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (event_id) DO NOTHING",
     )
-    .bind(Uuid::new_v4())
+    .bind(message.event_id)
     .bind(message.command_id)
     .bind(&message.robot_id)
     .bind(&message.event_type)
     .bind(&message.payload)
     .bind(message.occurred_at)
     .execute(&state.pool)
-    .await?;
+    .await?
+    .rows_affected()
+        == 1;
+
+    if !inserted {
+        return Ok(());
+    }
 
     match message.status.as_str() {
         "acknowledged" => {
@@ -769,6 +775,7 @@ mod tests {
     #[test]
     fn command_state_projection_is_derived_from_command_result_payload() {
         let message = CommandResultMessage {
+            event_id: Uuid::new_v4(),
             command_id: Uuid::new_v4(),
             robot_id: "robot-01".into(),
             status: "running".into(),

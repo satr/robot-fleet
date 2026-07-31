@@ -77,6 +77,7 @@ pub struct TelemetryMessage {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CommandResultMessage {
+    pub event_id: Uuid,
     pub command_id: Uuid,
     pub robot_id: String,
     pub status: String,

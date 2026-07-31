@@ -830,6 +830,7 @@ async fn publish_command_result_with_payload(
     payload: serde_json::Value,
 ) -> anyhow::Result<()> {
     let message = CommandResultMessage {
+        event_id: uuid::Uuid::new_v4(),
         command_id,
         robot_id: config.robot_id.clone(),
         status: status.into(),
