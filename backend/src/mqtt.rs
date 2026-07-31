@@ -4,8 +4,8 @@ use chrono::Utc;
 use robot_fleet_common::{
     mqtt::parse_mqtt_url,
     types::{
-        CommandResultMessage, RobotSensorEventMessage, RobotStreamMessage, StateMessage,
-        TelemetryMessage,
+        CommandResultMessage, RobotCommandMessage, RobotSensorEventMessage, RobotStreamMessage,
+        StateMessage, TelemetryMessage,
     },
 };
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
@@ -88,6 +88,15 @@ pub(crate) async fn run_robot_status_broadcast(state: AppState) {
     }
 }
 
+pub(crate) async fn run_command_delivery(state: AppState) {
+    loop {
+        sleep(Duration::from_secs(2)).await;
+        if let Err(err) = deliver_commands(&state).await {
+            warn!(error = %err, "failed to deliver pending commands");
+        }
+    }
+}
+
 async fn subscribe(state: &AppState, topic: &str, qos: QoS, description: &str) {
     if let Err(err) = state.mqtt.subscribe(topic, qos).await {
         error!(error = %err, "failed to subscribe to {description}");
@@ -120,5 +129,38 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
         db::insert_robot_sensor_event(state, &message).await?;
         app::broadcast_robot_update(state, &message.robot_id).await;
     }
+    Ok(())
+}
+
+async fn deliver_commands(state: &AppState) -> anyhow::Result<()> {
+    let expired_commands = db::expire_unacknowledged_commands(state).await?;
+    if !expired_commands.is_empty() {
+        state
+            .metrics
+            .commands_expired_without_ack
+            .inc_by(expired_commands.len() as u64);
+        for command in expired_commands {
+            app::broadcast_robot_update(state, &command.robot_id).await;
+        }
+    }
+
+    let retryable_commands = db::list_commands_due_for_retry(&state.pool).await?;
+    for command in retryable_commands {
+        let topic = format!("robots/{}/commands", command.robot_id);
+        let message = serde_json::to_vec(&RobotCommandMessage::from(&command))?;
+        if let Err(err) = state
+            .mqtt
+            .publish(topic, QoS::AtLeastOnce, false, message)
+            .await
+        {
+            warn!(
+                command_id = %command.command_id,
+                robot_id = %command.robot_id,
+                error = %err,
+                "failed to republish command"
+            );
+        }
+    }
+
     Ok(())
 }

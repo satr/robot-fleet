@@ -29,6 +29,17 @@ export async function sendRobotCommand(robotId: string, commandType: string, pay
   return response.json();
 }
 
+export async function sendSimulatedEvent(robotId: string, commandType: string, payload = {}) {
+  const response = await fetch(`${backendHttpUrl()}/robots/${robotId}/simulated-events`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ command_type: commandType, payload })
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to send ${commandType}: ${response.status}`);
+  }
+}
+
 export async function deleteRobot(robotId: string) {
   const response = await fetch(`${backendHttpUrl()}/robots/${robotId}`, {
     method: 'DELETE'

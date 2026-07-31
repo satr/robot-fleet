@@ -10,6 +10,7 @@ pub(crate) struct Metrics {
     pub(crate) commands_created: IntCounter,
     pub(crate) commands_completed: IntCounter,
     pub(crate) command_failures: IntCounter,
+    pub(crate) commands_expired_without_ack: IntCounter,
     pub(crate) sensor_events_received: IntCounterVec,
     pub(crate) mqtt_connection_status: Gauge,
     pub(crate) telemetry_lag_seconds: Gauge,
@@ -40,6 +41,10 @@ impl Metrics {
             IntCounter::new("commands_completed_total", "Commands completed by robots")?;
         let command_failures =
             IntCounter::new("command_failures_total", "Commands reported as failed")?;
+        let commands_expired_without_ack = IntCounter::new(
+            "commands_expired_without_ack_total",
+            "Commands expired before acknowledgement",
+        )?;
         let sensor_events_received = IntCounterVec::new(
             Opts::new(
                 "robot_sensor_events_total",
@@ -94,6 +99,7 @@ impl Metrics {
         registry.register(Box::new(commands_created.clone()))?;
         registry.register(Box::new(commands_completed.clone()))?;
         registry.register(Box::new(command_failures.clone()))?;
+        registry.register(Box::new(commands_expired_without_ack.clone()))?;
         registry.register(Box::new(sensor_events_received.clone()))?;
         registry.register(Box::new(mqtt_connection_status.clone()))?;
         registry.register(Box::new(telemetry_lag_seconds.clone()))?;
@@ -113,6 +119,7 @@ impl Metrics {
             commands_created,
             commands_completed,
             command_failures,
+            commands_expired_without_ack,
             sensor_events_received,
             mqtt_connection_status,
             telemetry_lag_seconds,

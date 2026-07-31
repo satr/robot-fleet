@@ -137,6 +137,41 @@ pub(crate) async fn list_commands(
     Ok(rows.into_iter().map(command_from_row).collect())
 }
 
+pub(crate) async fn list_commands_due_for_retry(
+    pool: &PgPool,
+) -> Result<Vec<CommandResponse>, sqlx::Error> {
+    let rows = sqlx::query(
+        "SELECT command_id, robot_id, command_type, payload, status, created_at, expires_at, acknowledged_at, completed_at
+         FROM commands
+         WHERE status = 'created'
+           AND created_at <= now() - interval '2 seconds'
+           AND (expires_at IS NULL OR expires_at > now())
+           AND lower(replace(replace(command_type, ' ', '_'), '-', '_')) NOT IN ('extreme_temperature', 'robot_stack')
+         ORDER BY created_at ASC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(command_from_row).collect())
+}
+
+pub(crate) async fn expire_unacknowledged_commands(
+    state: &AppState,
+) -> Result<Vec<CommandResponse>, sqlx::Error> {
+    let rows = sqlx::query(
+        "UPDATE commands
+         SET status = 'expired',
+             completed_at = COALESCE(completed_at, now())
+         WHERE status = 'created'
+           AND expires_at IS NOT NULL
+           AND expires_at <= now()
+           AND lower(replace(replace(command_type, ' ', '_'), '-', '_')) NOT IN ('extreme_temperature', 'robot_stack')
+         RETURNING command_id, robot_id, command_type, payload, status, created_at, expires_at, acknowledged_at, completed_at",
+    )
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows.into_iter().map(command_from_row).collect())
+}
+
 pub(crate) async fn delete_robot(pool: &PgPool, robot_id: &str) -> Result<(), sqlx::Error> {
     sqlx::query("DELETE FROM robots WHERE robot_id = $1")
         .bind(robot_id)

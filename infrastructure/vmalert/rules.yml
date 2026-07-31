@@ -3,13 +3,13 @@ groups:
     interval: 30s
     rules:
       - alert: ExtremeTemperatureDetected
-        expr: sum by (robot_id) (increase(robot_sensor_events_total{event_type="extream_temperature"}[5m])) > 0
+        expr: sum by (robot_id) (increase(robot_sensor_events_total{event_type="extreme_temperature"}[5m])) > 0
         labels:
           severity: critical
-          event_type: extream_temperature
+          event_type: extreme_temperature
         annotations:
           summary: "Extreme temperature event detected for {{ $labels.robot_id }}"
-          description: "Robot {{ $labels.robot_id }} reported extream_temperature within the last 5 minutes."
+          description: "Robot {{ $labels.robot_id }} reported extreme_temperature within the last 5 minutes."
 
       - alert: RobotStackDetected
         expr: sum by (robot_id) (increase(robot_sensor_events_total{event_type="robot_stack"}[5m])) > 0

@@ -33,6 +33,10 @@ pub(crate) fn router(state: AppState) -> Router {
             "/robots/:robot_id/commands",
             post(create_command).get(list_commands),
         )
+        .route(
+            "/robots/:robot_id/simulated-events",
+            post(create_simulated_event),
+        )
         .route("/internal/alertmanager/webhook", post(alertmanager_webhook))
         .route("/metrics", get(metrics))
         .layer(cors)
@@ -135,24 +139,50 @@ async fn create_command(
     )
     .await?;
 
-    let topic = command_topic(&robot_id, &request.command_type);
-    let message = serde_json::to_vec(&RobotCommandMessage::from(&command))
-        .map_err(|err| ApiError::BadRequest(err.to_string()))?;
-    state
-        .mqtt
-        .publish(topic, rumqttc::QoS::AtLeastOnce, false, message)
-        .await?;
+    publish_robot_command(
+        &state,
+        format!("robots/{robot_id}/commands"),
+        &RobotCommandMessage::from(&command),
+    )
+    .await?;
     state.metrics.commands_created.inc();
     app::broadcast_robot_update(&state, &robot_id).await;
     Ok(Json(command))
 }
 
-fn command_topic(robot_id: &str, command_type: &str) -> String {
-    if is_simulated_event_command(command_type) {
-        format!("robots/{robot_id}/simulated-events")
-    } else {
-        format!("robots/{robot_id}/commands")
+async fn create_simulated_event(
+    State(state): State<AppState>,
+    Path(robot_id): Path<String>,
+    Json(request): Json<CreateCommandRequest>,
+) -> Result<StatusCode, ApiError> {
+    state
+        .metrics
+        .http_requests
+        .with_label_values(&["POST /robots/{robot_id}/simulated-events"])
+        .inc();
+    if request.command_type.trim().is_empty() {
+        return Err(ApiError::BadRequest("command_type is required".into()));
     }
+    validate_simulated_event_request(&request)?;
+
+    db::insert_placeholder_robot(&state.pool, &robot_id).await?;
+    let command = db::create_command(
+        &state.pool,
+        &robot_id,
+        &request.command_type,
+        &request.payload,
+        request.expires_at,
+    )
+    .await?;
+    publish_robot_command(
+        &state,
+        format!("robots/{robot_id}/simulated-events"),
+        &RobotCommandMessage::from(&command),
+    )
+    .await?;
+    state.metrics.commands_created.inc();
+    app::broadcast_robot_update(&state, &robot_id).await;
+    Ok(StatusCode::ACCEPTED)
 }
 
 fn normalize_command_type(command_type: &str) -> String {
@@ -165,11 +195,31 @@ fn normalize_command_type(command_type: &str) -> String {
 fn is_simulated_event_command(command_type: &str) -> bool {
     matches!(
         normalize_command_type(command_type).as_str(),
-        "extream_temperature" | "robot_stack"
+        "extreme_temperature" | "robot_stack"
     )
 }
 
+async fn publish_robot_command(
+    state: &AppState,
+    topic: String,
+    message: &RobotCommandMessage,
+) -> Result<(), ApiError> {
+    let payload =
+        serde_json::to_vec(message).map_err(|err| ApiError::BadRequest(err.to_string()))?;
+    state
+        .mqtt
+        .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload)
+        .await?;
+    Ok(())
+}
+
 fn validate_command_request(request: &CreateCommandRequest) -> Result<(), ApiError> {
+    if is_simulated_event_command(&request.command_type) {
+        return Err(ApiError::BadRequest(
+            "simulated event commands must be sent to /robots/{robot_id}/simulated-events".into(),
+        ));
+    }
+
     let command_type = normalize_command_type(&request.command_type);
     match command_type.as_str() {
         "move" => {
@@ -229,11 +279,31 @@ fn validate_command_request(request: &CreateCommandRequest) -> Result<(), ApiErr
                 ));
             }
         }
-        "extream_temperature" | "robot_stack" => {}
+        "extreme_temperature" | "robot_stack" => {
+            return Err(ApiError::BadRequest(
+                "simulated event commands must be sent to /robots/{robot_id}/simulated-events"
+                    .into(),
+            ));
+        }
         _ => {}
     }
 
     Ok(())
+}
+
+fn validate_simulated_event_request(request: &CreateCommandRequest) -> Result<(), ApiError> {
+    if is_simulated_event_command(&request.command_type) {
+        return Ok(());
+    }
+
+    let command_type = normalize_command_type(&request.command_type);
+    match command_type.as_str() {
+        "move" | "set_velocity" | "stop" => Err(ApiError::BadRequest(
+            "move, set_velocity and stop commands must be sent to /robots/{robot_id}/commands"
+                .into(),
+        )),
+        _ => Err(ApiError::BadRequest("unsupported command_type".into())),
+    }
 }
 
 async fn list_commands(
@@ -405,23 +475,22 @@ mod tests {
     }
 
     #[test]
-    fn incident_commands_use_expected_topics() {
-        assert_eq!(
-            command_topic("robot-01", "extream_temperature"),
-            "robots/robot-01/simulated-events"
-        );
-        assert_eq!(
-            command_topic("robot-01", "robot_stack"),
-            "robots/robot-01/simulated-events"
-        );
-        assert_eq!(
-            command_topic("robot-01", "Extream Temperature"),
-            "robots/robot-01/simulated-events"
-        );
-        assert_eq!(
-            command_topic("robot-01", "move"),
-            "robots/robot-01/commands"
-        );
+    fn simulated_event_commands_require_the_dedicated_endpoint() {
+        let simulated_event_request = CreateCommandRequest {
+            command_type: "extreme_temperature".into(),
+            payload: json!({}),
+            expires_at: None,
+        };
+        assert!(validate_simulated_event_request(&simulated_event_request).is_ok());
+        assert!(validate_command_request(&simulated_event_request).is_err());
+
+        let regular_command_request = CreateCommandRequest {
+            command_type: "move".into(),
+            payload: json!({ "target_position_x": 10, "target_position_y": 20 }),
+            expires_at: None,
+        };
+        assert!(validate_command_request(&regular_command_request).is_ok());
+        assert!(validate_simulated_event_request(&regular_command_request).is_err());
     }
 
     #[test]

@@ -21,9 +21,7 @@ use tracing::{info, warn};
 use crate::{
     config::Config,
     metrics::Metrics,
-    persistence::{
-        persist_processed_command, ProcessedCommandRecord, ProcessedCommandStatus,
-    },
+    persistence::{persist_processed_commands, ProcessedCommandRecord, ProcessedCommandStatus},
     state::{AppliedCommand, RobotState},
 };
 
@@ -287,38 +285,82 @@ async fn handle_command(
         let guard = state.lock().await;
         guard.processed_command(&command.command_id).cloned()
     } {
-        let duplicate_status = existing_record.status.duplicate_response();
-        if duplicate_status != existing_record.status {
-            let updated_record = existing_record.with_status(duplicate_status, Utc::now());
-            persist_processed_command(&config.processed_commands_path, &updated_record).await?;
-            let mut guard = state.lock().await;
-            guard.remember_processed_command(updated_record);
+        if !existing_record.matches_command(&command) {
+            let cancelled_record = existing_record.with_command_and_status(
+                &command,
+                ProcessedCommandStatus::Cancelled,
+                Utc::now(),
+            );
+            let records = {
+                let mut guard = state.lock().await;
+                guard.remember_processed_command(cancelled_record);
+                guard.processed_commands.clone()
+            };
+            persist_processed_commands(&config.processed_commands_path, &records).await?;
+            info!(
+                robot_id = config.robot_id,
+                command_id = %command.command_id,
+                "command arguments changed; marking command cancelled"
+            );
+            publish_command_result_with_payload(
+                client,
+                config,
+                command.command_id,
+                "failed",
+                "command_cancelled",
+                json!({
+                    "command_type": command.command_type,
+                    "payload": command.payload,
+                    "reason": "command_arguments_changed",
+                }),
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let persisted_status = existing_record.status.duplicate_response();
+        if persisted_status != existing_record.status {
+            let updated_record = existing_record.with_status(persisted_status, Utc::now());
+            let records = {
+                let mut guard = state.lock().await;
+                guard.remember_processed_command(updated_record);
+                guard.processed_commands.clone()
+            };
+            persist_processed_commands(&config.processed_commands_path, &records).await?;
         }
 
         info!(
             robot_id = config.robot_id,
             command_id = %command.command_id,
-            status = duplicate_status.as_str(),
+            status = persisted_status.as_str(),
             "duplicate command acknowledged without re-execution"
         );
         publish_command_result(
             client,
             config,
             &command,
-            duplicate_status.as_str(),
-            duplicate_command_event_type(duplicate_status),
+            duplicate_publish_status(persisted_status),
+            duplicate_command_event_type(persisted_status),
         )
         .await?;
         return Ok(());
     }
 
     metrics.commands_processed.inc();
-    let received_record = ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, Utc::now());
-    persist_processed_command(&config.processed_commands_path, &received_record).await?;
-    {
+
+    if !should_track_processed_command(&command.command_type) {
+        handle_simulated_event_command(client, config, state, metrics, &command).await?;
+        return Ok(());
+    }
+
+    let received_record =
+        ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, Utc::now());
+    let records = {
         let mut guard = state.lock().await;
         guard.remember_processed_command(received_record);
-    }
+        guard.processed_commands.clone()
+    };
+    persist_processed_commands(&config.processed_commands_path, &records).await?;
 
     update_command_record_status(
         state,
@@ -460,7 +502,7 @@ async fn handle_command(
                     if stop {
                         ProcessedCommandStatus::Stopped
                     } else {
-                        ProcessedCommandStatus::Running
+                        ProcessedCommandStatus::Resumed
                     },
                     Utc::now(),
                 )
@@ -506,64 +548,72 @@ async fn handle_command(
             publish_command_result(client, config, &command, "completed", "command_completed")
                 .await?;
         }
-        AppliedCommand::SimulateEvent {
-            event_type,
-            priority,
-            interrupted_move_command_id,
-        } => {
-            if let Some(interrupted_move_command_id) = interrupted_move_command_id {
-                update_command_status_by_id(
-                    state,
-                    &config.processed_commands_path,
-                    interrupted_move_command_id,
-                    ProcessedCommandStatus::Stopped,
-                    Utc::now(),
-                )
-                .await?;
-                publish_command_result_with_payload(
-                    client,
-                    config,
-                    interrupted_move_command_id,
-                    "stopped",
-                    "command_stopped",
-                    json!({
-                        "command_type": "move",
-                        "reason": "sensor_event",
-                        "event_type": &event_type,
-                        "stopped_by": command.command_id,
-                    }),
-                )
-                .await?;
-            }
-
-            update_command_record_status(
-                state,
-                &config.processed_commands_path,
-                command.command_id,
-                ProcessedCommandStatus::Running,
-                Utc::now(),
-            )
-            .await?;
-            publish_command_result(client, config, &command, "running", "command_running").await?;
-            publish_state(client, config, state).await?;
-            {
-                let mut guard = state.lock().await;
-                guard.finish_safe_state();
-            }
-            publish_state(client, config, state).await?;
-            publish_sensor_event(client, config, metrics, &command, &event_type, &priority).await?;
-            update_command_record_status(
-                state,
-                &config.processed_commands_path,
-                command.command_id,
-                ProcessedCommandStatus::Completed,
-                Utc::now(),
-            )
-            .await?;
-            publish_command_result(client, config, &command, "completed", "command_completed")
-                .await?;
+        AppliedCommand::SimulateEvent { .. } => {
+            return Err(anyhow!(
+                "simulated event commands must be handled without processed-command tracking"
+            ));
         }
     }
+    Ok(())
+}
+
+async fn handle_simulated_event_command(
+    client: &AsyncClient,
+    config: &Config,
+    state: &Arc<Mutex<RobotState>>,
+    metrics: &Metrics,
+    command: &RobotCommandMessage,
+) -> anyhow::Result<()> {
+    let applied = {
+        let mut guard = state.lock().await;
+        guard.apply_command(command.command_id, &command.command_type, &command.payload)
+    }?;
+
+    let AppliedCommand::SimulateEvent {
+        event_type,
+        priority,
+        interrupted_move_command_id,
+    } = applied
+    else {
+        return Err(anyhow!(
+            "simulated event command_type produced unexpected command application result"
+        ));
+    };
+
+    if let Some(interrupted_move_command_id) = interrupted_move_command_id {
+        update_command_status_by_id(
+            state,
+            &config.processed_commands_path,
+            interrupted_move_command_id,
+            ProcessedCommandStatus::Stopped,
+            Utc::now(),
+        )
+        .await?;
+        publish_command_result_with_payload(
+            client,
+            config,
+            interrupted_move_command_id,
+            "stopped",
+            "command_stopped",
+            json!({
+                "command_type": "move",
+                "reason": "sensor_event",
+                "event_type": &event_type,
+                "stopped_by": command.command_id,
+            }),
+        )
+        .await?;
+    }
+
+    publish_command_result(client, config, command, "running", "command_running").await?;
+    publish_state(client, config, state).await?;
+    {
+        let mut guard = state.lock().await;
+        guard.finish_safe_state();
+    }
+    publish_state(client, config, state).await?;
+    publish_sensor_event(client, config, metrics, command, &event_type, &priority).await?;
+    publish_command_result(client, config, command, "completed", "command_completed").await?;
     Ok(())
 }
 
@@ -618,6 +668,24 @@ fn sensor_event_topic(robot_id: &str, priority: &str) -> String {
     } else {
         format!("robots/{robot_id}/events")
     }
+}
+
+fn normalize_command_type(command_type: &str) -> String {
+    command_type
+        .trim()
+        .to_ascii_lowercase()
+        .replace([' ', '-'], "_")
+}
+
+fn is_simulated_event_command(command_type: &str) -> bool {
+    matches!(
+        normalize_command_type(command_type).as_str(),
+        "extreme_temperature" | "robot_stack"
+    )
+}
+
+fn should_track_processed_command(command_type: &str) -> bool {
+    !is_simulated_event_command(command_type)
 }
 
 fn spawn_move_completion_watcher(
@@ -748,7 +816,11 @@ async fn update_command_record_status(
         guard.remember_processed_command(updated_record.clone());
         updated_record
     };
-    persist_processed_command(path, &record).await?;
+    let records = {
+        let guard = state.lock().await;
+        guard.processed_commands.clone()
+    };
+    persist_processed_commands(path, &records).await?;
     Ok(record)
 }
 
@@ -768,6 +840,8 @@ fn duplicate_command_event_type(status: ProcessedCommandStatus) -> &'static str 
             "command_duplicate_acknowledged"
         }
         ProcessedCommandStatus::Running => "command_running",
+        ProcessedCommandStatus::Resumed => "command_resumed",
+        ProcessedCommandStatus::Cancelled => "command_cancelled",
         ProcessedCommandStatus::Completed => "command_completed",
         ProcessedCommandStatus::Failed => "command_failed",
         ProcessedCommandStatus::Expired => "command_expired",
@@ -775,9 +849,24 @@ fn duplicate_command_event_type(status: ProcessedCommandStatus) -> &'static str 
     }
 }
 
+fn duplicate_publish_status(status: ProcessedCommandStatus) -> &'static str {
+    match status {
+        ProcessedCommandStatus::Received | ProcessedCommandStatus::Acknowledged => "acknowledged",
+        ProcessedCommandStatus::Running | ProcessedCommandStatus::Resumed => "running",
+        ProcessedCommandStatus::Cancelled
+        | ProcessedCommandStatus::Failed
+        | ProcessedCommandStatus::Expired => "failed",
+        ProcessedCommandStatus::Completed => "completed",
+        ProcessedCommandStatus::Stopped => "stopped",
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{command_subscription_topics, sensor_event_topic};
+    use super::{
+        command_subscription_topics, is_simulated_event_command, sensor_event_topic,
+        should_track_processed_command,
+    };
 
     #[test]
     fn simulator_accepts_event_requests_on_current_and_legacy_topics() {
@@ -801,5 +890,13 @@ mod tests {
             sensor_event_topic("robot-01", "normal"),
             "robots/robot-01/events"
         );
+    }
+
+    #[test]
+    fn simulated_event_commands_are_not_tracked() {
+        assert!(is_simulated_event_command("extreme_temperature"));
+        assert!(is_simulated_event_command("Robot Stack"));
+        assert!(!should_track_processed_command("extreme_temperature"));
+        assert!(should_track_processed_command("move"));
     }
 }

@@ -1,4 +1,8 @@
-use std::{collections::{HashMap, HashSet}, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -127,7 +131,7 @@ impl RobotState {
                     affected_move_command_id: self.current_move_command_id,
                 })
             }
-            "extream_temperature" => Ok(self.start_simulated_event("extream_temperature", "high")),
+            "extreme_temperature" => Ok(self.start_simulated_event("extreme_temperature", "high")),
             "robot_stack" => Ok(self.start_simulated_event("robot_stack", "normal")),
             other => Err(anyhow!("unsupported command_type: {other}")),
         }
@@ -382,7 +386,11 @@ mod tests {
                     updated_at: chrono::Utc::now(),
                     expires_at: None,
                     acknowledged_at: None,
+                    stopped_at: None,
+                    resumed_at: None,
+                    cancelled_at: None,
                     completed_at: None,
+                    failed_at: None,
                 }
             )
             .is_none());
@@ -561,13 +569,13 @@ mod tests {
             .expect("move command");
 
         let applied = state
-            .apply_command(Uuid::new_v4(), "extream_temperature", &json!({}))
+            .apply_command(Uuid::new_v4(), "extreme_temperature", &json!({}))
             .expect("simulated event command");
 
         assert_eq!(
             applied,
             AppliedCommand::SimulateEvent {
-                event_type: "extream_temperature".into(),
+                event_type: "extreme_temperature".into(),
                 priority: "high".into(),
                 interrupted_move_command_id: Some(move_command_id)
             }

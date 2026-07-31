@@ -1,6 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { backendWsUrl, deleteRobot, fetchRobots, sendRobotCommand } from '$lib/api';
+  import {
+    backendWsUrl,
+    deleteRobot,
+    fetchRobots,
+    sendRobotCommand,
+    sendSimulatedEvent
+  } from '$lib/api';
   import type { Robot, RobotStreamMessage } from '$lib/types';
 
   type MoveForm = {
@@ -150,8 +156,16 @@
     await runCommand(robot, 'stop', { stop: !robot.stop });
   }
 
-  async function simulateEvent(robot: Robot, eventType: 'extream_temperature' | 'robot_stack') {
-    await runCommand(robot, eventType, { simulated: true });
+  async function simulateEvent(robot: Robot, eventType: 'extreme_temperature' | 'robot_stack') {
+    pendingAction = `${robot.robot_id}:${eventType}`;
+    error = '';
+    try {
+      await sendSimulatedEvent(robot.robot_id, eventType, { simulated: true });
+    } catch (err) {
+      error = err instanceof Error ? err.message : `Failed to send ${eventType}.`;
+    } finally {
+      pendingAction = '';
+    }
   }
 
   async function removeRobot(robot: Robot) {
@@ -331,9 +345,9 @@
             <button
               class="danger"
               disabled={pendingAction !== ''}
-              on:click={() => simulateEvent(robot, 'extream_temperature')}
+              on:click={() => simulateEvent(robot, 'extreme_temperature')}
             >
-              Extream temperature
+              Extreme temperature
             </button>
             <button
               class="warning"
