@@ -32,6 +32,8 @@ The backend subscribes directly to MQTT topics, stores current state in PostgreS
 
 ![Web app dashboard](img/robot-fleet-dashboard.png)
 
+![Grafana dashboard](img/robot-fleet-grafana.png)
+
 ### Production evolution
 
 ```mermaid
