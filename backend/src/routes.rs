@@ -9,11 +9,11 @@ use axum::{
     Json, Router,
 };
 use prometheus::{Encoder, TextEncoder};
-use serde_json::Value;
 use robot_fleet_common::types::{
     CommandResponse, CreateCommandRequest, HealthResponse, Robot, RobotCommandMessage,
     RobotStreamMessage,
 };
+use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::{app, app::AppState, db, error::ApiError};
@@ -312,7 +312,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::{metrics::Metrics};
+    use crate::metrics::Metrics;
 
     fn test_state() -> AppState {
         let metrics = Arc::new(Metrics::new().expect("metrics"));

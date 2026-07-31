@@ -76,31 +76,26 @@ pub(crate) async fn run_robot(
             run_state_publisher(state_client, state_config, state_state).await
         });
 
-        loop {
-            tokio::select! {
-                eventloop_result = &mut eventloop_task => {
-                    match eventloop_result {
-                        Ok(Ok(())) => warn!(robot_id = config.robot_id, "MQTT event loop ended; reconnecting"),
-                        Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "MQTT disconnected; reconnecting"),
-                        Err(err) => warn!(robot_id = config.robot_id, error = %err, "MQTT task failed; reconnecting"),
-                    }
-                    break;
+        tokio::select! {
+            eventloop_result = &mut eventloop_task => {
+                match eventloop_result {
+                    Ok(Ok(())) => warn!(robot_id = config.robot_id, "MQTT event loop ended; reconnecting"),
+                    Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "MQTT disconnected; reconnecting"),
+                    Err(err) => warn!(robot_id = config.robot_id, error = %err, "MQTT task failed; reconnecting"),
                 }
-                telemetry_result = &mut telemetry_task => {
-                    match telemetry_result {
-                        Ok(Ok(())) => warn!(robot_id = config.robot_id, "telemetry publisher ended; reconnecting"),
-                        Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "telemetry publisher failed; reconnecting"),
-                        Err(err) => warn!(robot_id = config.robot_id, error = %err, "telemetry task failed; reconnecting"),
-                    }
-                    break;
+            }
+            telemetry_result = &mut telemetry_task => {
+                match telemetry_result {
+                    Ok(Ok(())) => warn!(robot_id = config.robot_id, "telemetry publisher ended; reconnecting"),
+                    Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "telemetry publisher failed; reconnecting"),
+                    Err(err) => warn!(robot_id = config.robot_id, error = %err, "telemetry task failed; reconnecting"),
                 }
-                state_result = &mut state_task => {
-                    match state_result {
-                        Ok(Ok(())) => warn!(robot_id = config.robot_id, "state publisher ended; reconnecting"),
-                        Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "state publisher failed; reconnecting"),
-                        Err(err) => warn!(robot_id = config.robot_id, error = %err, "state task failed; reconnecting"),
-                    }
-                    break;
+            }
+            state_result = &mut state_task => {
+                match state_result {
+                    Ok(Ok(())) => warn!(robot_id = config.robot_id, "state publisher ended; reconnecting"),
+                    Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "state publisher failed; reconnecting"),
+                    Err(err) => warn!(robot_id = config.robot_id, error = %err, "state task failed; reconnecting"),
                 }
             }
         }

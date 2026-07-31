@@ -115,10 +115,6 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
         let message: CommandResultMessage = serde_json::from_slice(payload)?;
         db::apply_command_result(state, &message).await?;
         app::broadcast_robot_update(state, &message.robot_id).await;
-    } else if topic.ends_with("/command-results") {
-        let message: CommandResultMessage = serde_json::from_slice(payload)?;
-        db::apply_command_result(state, &message).await?;
-        app::broadcast_robot_update(state, &message.robot_id).await;
     } else if topic.ends_with("/events") || topic.ends_with("/events/high-priority") {
         let message: RobotSensorEventMessage = serde_json::from_slice(payload)?;
         db::insert_robot_sensor_event(state, &message).await?;
