@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::{HashMap, HashSet}, sync::Arc, time::Duration};
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -7,6 +7,8 @@ use tokio::{
     time::{interval, MissedTickBehavior},
 };
 use uuid::Uuid;
+
+use crate::persistence::ProcessedCommandRecord;
 
 #[derive(Debug)]
 pub(crate) struct RobotState {
@@ -23,7 +25,7 @@ pub(crate) struct RobotState {
     pub(crate) current_mission: Option<String>,
     pub(crate) state: String,
     pub(crate) software_version: String,
-    pub(crate) processed_commands: HashSet<Uuid>,
+    pub(crate) processed_commands: HashMap<Uuid, ProcessedCommandRecord>,
     pub(crate) current_move_command_id: Option<Uuid>,
     completed_move_commands: HashSet<Uuid>,
     safe_state: bool,
@@ -48,7 +50,10 @@ pub(crate) enum AppliedCommand {
 }
 
 impl RobotState {
-    pub(crate) fn new(processed_commands: HashSet<Uuid>, motion_tick: Duration) -> Self {
+    pub(crate) fn new(
+        processed_commands: HashMap<Uuid, ProcessedCommandRecord>,
+        motion_tick: Duration,
+    ) -> Self {
         let motion_tick_seconds = motion_tick.as_secs_f64().max(f64::EPSILON);
         Self {
             battery_level: 100.0,
@@ -70,6 +75,14 @@ impl RobotState {
             safe_state: false,
             motion_tick_seconds,
         }
+    }
+
+    pub(crate) fn processed_command(&self, command_id: &Uuid) -> Option<&ProcessedCommandRecord> {
+        self.processed_commands.get(command_id)
+    }
+
+    pub(crate) fn remember_processed_command(&mut self, record: ProcessedCommandRecord) {
+        self.processed_commands.insert(record.command_id, record);
     }
 
     pub(crate) fn apply_command(
@@ -344,25 +357,41 @@ fn parse_stop_payload(payload: &Value) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashSet, time::Duration};
+    use std::{collections::HashMap, time::Duration};
 
     use serde_json::json;
     use uuid::Uuid;
 
     use super::{AppliedCommand, RobotState};
+    use crate::persistence::{ProcessedCommandRecord, ProcessedCommandStatus};
 
     #[test]
     fn duplicate_command_is_detected() {
         let command_id = Uuid::new_v4();
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
 
-        assert!(state.processed_commands.insert(command_id));
-        assert!(!state.processed_commands.insert(command_id));
+        assert!(state
+            .processed_commands
+            .insert(
+                command_id,
+                ProcessedCommandRecord {
+                    command_id,
+                    command_type: "move".into(),
+                    payload: json!({}),
+                    status: ProcessedCommandStatus::Completed,
+                    updated_at: chrono::Utc::now(),
+                    expires_at: None,
+                    acknowledged_at: None,
+                    completed_at: None,
+                }
+            )
+            .is_none());
+        assert!(state.processed_commands.contains_key(&command_id));
     }
 
     #[test]
     fn move_command_sets_target_and_uses_velocity() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
         state
             .apply_command(
                 Uuid::new_v4(),
@@ -392,7 +421,7 @@ mod tests {
 
     #[test]
     fn move_command_accepts_target_position_object() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
         state
             .apply_command(
                 Uuid::new_v4(),
@@ -407,7 +436,7 @@ mod tests {
 
     #[test]
     fn new_move_command_overrides_active_move() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
         let first_command_id = Uuid::new_v4();
         let second_command_id = Uuid::new_v4();
         state
@@ -438,7 +467,7 @@ mod tests {
 
     #[test]
     fn set_velocity_command_updates_value_and_respects_bounds() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
         state
             .apply_command(
                 Uuid::new_v4(),
@@ -452,7 +481,7 @@ mod tests {
 
     #[test]
     fn stop_command_pauses_and_resumes_motion() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
         state
             .apply_command(
                 Uuid::new_v4(),
@@ -486,7 +515,7 @@ mod tests {
 
     #[test]
     fn motion_advance_moves_toward_target() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
         state
             .apply_command(
                 Uuid::new_v4(),
@@ -521,7 +550,7 @@ mod tests {
 
     #[test]
     fn simulated_event_interrupts_motion_and_finishes_safe_state() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
         let move_command_id = Uuid::new_v4();
         state
             .apply_command(
@@ -556,7 +585,7 @@ mod tests {
 
     #[test]
     fn simulated_event_commands_accept_human_readable_names() {
-        let mut state = RobotState::new(HashSet::new(), Duration::from_secs(1));
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
 
         let applied = state
             .apply_command(Uuid::new_v4(), "Robot Stack", &json!({}))

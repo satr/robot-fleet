@@ -1,5 +1,6 @@
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 
+use anyhow::anyhow;
 use chrono::Utc;
 use rand::Rng;
 use robot_fleet_common::{
@@ -20,7 +21,9 @@ use tracing::{info, warn};
 use crate::{
     config::Config,
     metrics::Metrics,
-    persistence::persist_processed_command,
+    persistence::{
+        persist_processed_command, ProcessedCommandRecord, ProcessedCommandStatus,
+    },
     state::{AppliedCommand, RobotState},
 };
 
@@ -280,31 +283,51 @@ async fn handle_command(
         return Ok(());
     }
 
-    let is_duplicate = {
-        let mut guard = state.lock().await;
-        if guard.processed_commands.contains(&command.command_id) {
-            true
-        } else {
-            persist_processed_command(&config.processed_commands_path, command.command_id).await?;
-            guard.processed_commands.insert(command.command_id);
-            false
+    if let Some(existing_record) = {
+        let guard = state.lock().await;
+        guard.processed_command(&command.command_id).cloned()
+    } {
+        let duplicate_status = existing_record.status.duplicate_response();
+        if duplicate_status != existing_record.status {
+            let updated_record = existing_record.with_status(duplicate_status, Utc::now());
+            persist_processed_command(&config.processed_commands_path, &updated_record).await?;
+            let mut guard = state.lock().await;
+            guard.remember_processed_command(updated_record);
         }
-    };
 
-    if is_duplicate {
-        info!(robot_id = config.robot_id, command_id = %command.command_id, "duplicate command acknowledged without re-execution");
+        info!(
+            robot_id = config.robot_id,
+            command_id = %command.command_id,
+            status = duplicate_status.as_str(),
+            "duplicate command acknowledged without re-execution"
+        );
         publish_command_result(
             client,
             config,
             &command,
-            "acknowledged",
-            "command_duplicate_acknowledged",
+            duplicate_status.as_str(),
+            duplicate_command_event_type(duplicate_status),
         )
         .await?;
         return Ok(());
     }
 
     metrics.commands_processed.inc();
+    let received_record = ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, Utc::now());
+    persist_processed_command(&config.processed_commands_path, &received_record).await?;
+    {
+        let mut guard = state.lock().await;
+        guard.remember_processed_command(received_record);
+    }
+
+    update_command_record_status(
+        state,
+        &config.processed_commands_path,
+        command.command_id,
+        ProcessedCommandStatus::Acknowledged,
+        Utc::now(),
+    )
+    .await?;
     publish_command_result(
         client,
         config,
@@ -318,6 +341,14 @@ async fn handle_command(
         .expires_at
         .is_some_and(|expires_at| expires_at <= Utc::now())
     {
+        update_command_record_status(
+            state,
+            &config.processed_commands_path,
+            command.command_id,
+            ProcessedCommandStatus::Expired,
+            Utc::now(),
+        )
+        .await?;
         publish_command_result(client, config, &command, "expired", "command_expired").await?;
         return Ok(());
     }
@@ -330,6 +361,14 @@ async fn handle_command(
     let applied = match applied {
         Ok(applied) => applied,
         Err(err) => {
+            update_command_record_status(
+                state,
+                &config.processed_commands_path,
+                command.command_id,
+                ProcessedCommandStatus::Failed,
+                Utc::now(),
+            )
+            .await?;
             publish_command_result_with_payload(
                 client,
                 config,
@@ -352,6 +391,14 @@ async fn handle_command(
             overridden_command_id,
         } => {
             if let Some(overridden_command_id) = overridden_command_id {
+                update_command_status_by_id(
+                    state,
+                    &config.processed_commands_path,
+                    overridden_command_id,
+                    ProcessedCommandStatus::Stopped,
+                    Utc::now(),
+                )
+                .await?;
                 publish_command_result_with_payload(
                     client,
                     config,
@@ -367,13 +414,37 @@ async fn handle_command(
                 .await?;
             }
 
+            update_command_record_status(
+                state,
+                &config.processed_commands_path,
+                command.command_id,
+                ProcessedCommandStatus::Running,
+                Utc::now(),
+            )
+            .await?;
             publish_command_result(client, config, &command, "running", "command_running").await?;
             publish_state(client, config, state).await?;
             spawn_move_completion_watcher(client.clone(), config.clone(), state.clone(), command);
         }
         AppliedCommand::SetVelocity => {
+            update_command_record_status(
+                state,
+                &config.processed_commands_path,
+                command.command_id,
+                ProcessedCommandStatus::Running,
+                Utc::now(),
+            )
+            .await?;
             publish_command_result(client, config, &command, "running", "command_running").await?;
             publish_state(client, config, state).await?;
+            update_command_record_status(
+                state,
+                &config.processed_commands_path,
+                command.command_id,
+                ProcessedCommandStatus::Completed,
+                Utc::now(),
+            )
+            .await?;
             publish_command_result(client, config, &command, "completed", "command_completed")
                 .await?;
         }
@@ -382,6 +453,18 @@ async fn handle_command(
             affected_move_command_id,
         } => {
             if let Some(affected_move_command_id) = affected_move_command_id {
+                update_command_status_by_id(
+                    state,
+                    &config.processed_commands_path,
+                    affected_move_command_id,
+                    if stop {
+                        ProcessedCommandStatus::Stopped
+                    } else {
+                        ProcessedCommandStatus::Running
+                    },
+                    Utc::now(),
+                )
+                .await?;
                 let (status, event_type) = if stop {
                     ("stopped", "command_stopped")
                 } else {
@@ -402,8 +485,24 @@ async fn handle_command(
                 .await?;
             }
 
+            update_command_record_status(
+                state,
+                &config.processed_commands_path,
+                command.command_id,
+                ProcessedCommandStatus::Running,
+                Utc::now(),
+            )
+            .await?;
             publish_command_result(client, config, &command, "running", "command_running").await?;
             publish_state(client, config, state).await?;
+            update_command_record_status(
+                state,
+                &config.processed_commands_path,
+                command.command_id,
+                ProcessedCommandStatus::Completed,
+                Utc::now(),
+            )
+            .await?;
             publish_command_result(client, config, &command, "completed", "command_completed")
                 .await?;
         }
@@ -413,6 +512,14 @@ async fn handle_command(
             interrupted_move_command_id,
         } => {
             if let Some(interrupted_move_command_id) = interrupted_move_command_id {
+                update_command_status_by_id(
+                    state,
+                    &config.processed_commands_path,
+                    interrupted_move_command_id,
+                    ProcessedCommandStatus::Stopped,
+                    Utc::now(),
+                )
+                .await?;
                 publish_command_result_with_payload(
                     client,
                     config,
@@ -429,6 +536,14 @@ async fn handle_command(
                 .await?;
             }
 
+            update_command_record_status(
+                state,
+                &config.processed_commands_path,
+                command.command_id,
+                ProcessedCommandStatus::Running,
+                Utc::now(),
+            )
+            .await?;
             publish_command_result(client, config, &command, "running", "command_running").await?;
             publish_state(client, config, state).await?;
             {
@@ -437,6 +552,14 @@ async fn handle_command(
             }
             publish_state(client, config, state).await?;
             publish_sensor_event(client, config, metrics, &command, &event_type, &priority).await?;
+            update_command_record_status(
+                state,
+                &config.processed_commands_path,
+                command.command_id,
+                ProcessedCommandStatus::Completed,
+                Utc::now(),
+            )
+            .await?;
             publish_command_result(client, config, &command, "completed", "command_completed")
                 .await?;
         }
@@ -521,6 +644,23 @@ fn spawn_move_completion_watcher(
             };
 
             if completed {
+                if let Err(err) = update_command_record_status(
+                    &state,
+                    &config.processed_commands_path,
+                    command.command_id,
+                    ProcessedCommandStatus::Completed,
+                    Utc::now(),
+                )
+                .await
+                {
+                    warn!(
+                        robot_id = config.robot_id,
+                        command_id = %command.command_id,
+                        error = %err,
+                        "failed to persist move completion"
+                    );
+                    return;
+                }
                 if let Err(err) = publish_command_result(
                     &client,
                     &config,
@@ -589,6 +729,50 @@ async fn publish_command_result_with_payload(
         )
         .await?;
     Ok(())
+}
+
+async fn update_command_record_status(
+    state: &Arc<Mutex<RobotState>>,
+    path: &Path,
+    command_id: uuid::Uuid,
+    status: ProcessedCommandStatus,
+    updated_at: chrono::DateTime<Utc>,
+) -> anyhow::Result<ProcessedCommandRecord> {
+    let record = {
+        let mut guard = state.lock().await;
+        let current = guard
+            .processed_command(&command_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("missing processed command record for {command_id}"))?;
+        let updated_record = current.with_status(status, updated_at);
+        guard.remember_processed_command(updated_record.clone());
+        updated_record
+    };
+    persist_processed_command(path, &record).await?;
+    Ok(record)
+}
+
+async fn update_command_status_by_id(
+    state: &Arc<Mutex<RobotState>>,
+    path: &Path,
+    command_id: uuid::Uuid,
+    status: ProcessedCommandStatus,
+    updated_at: chrono::DateTime<Utc>,
+) -> anyhow::Result<ProcessedCommandRecord> {
+    update_command_record_status(state, path, command_id, status, updated_at).await
+}
+
+fn duplicate_command_event_type(status: ProcessedCommandStatus) -> &'static str {
+    match status {
+        ProcessedCommandStatus::Received | ProcessedCommandStatus::Acknowledged => {
+            "command_duplicate_acknowledged"
+        }
+        ProcessedCommandStatus::Running => "command_running",
+        ProcessedCommandStatus::Completed => "command_completed",
+        ProcessedCommandStatus::Failed => "command_failed",
+        ProcessedCommandStatus::Expired => "command_expired",
+        ProcessedCommandStatus::Stopped => "command_stopped",
+    }
 }
 
 #[cfg(test)]

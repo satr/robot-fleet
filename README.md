@@ -24,7 +24,7 @@ Current implementation: the backend subscribes to robot MQTT telemetry/state/res
 
 ![Web app dashboard](img/robot-fleet-dashboard.png)
 
-Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each simulator persists command IDs before acknowledgement for idempotency, reports every command lifecycle state over MQTT, executes motion independently from MQTT command intake, and can simulate sensor incidents. Grafana includes per-robot motion metrics for velocity/direction and bar charts for simulated sensor events.
+Robot status is derived from when the backend last saw telemetry or state: `online` within 5 seconds, `stale` from 5 to 15 seconds, and `offline` after 15 seconds. Each simulator persists status-aware command records before acknowledgement for idempotency, reports every command lifecycle state over MQTT, executes motion independently from MQTT command intake, and can simulate sensor incidents. Grafana includes per-robot motion metrics for velocity/direction and bar charts for simulated sensor events.
 
 ![Grafana dashboard](img/robot-fleet-grafana.png)
 
@@ -81,7 +81,7 @@ make web-run
 
 Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`, then remote-writes metrics to VictoriaMetrics. Grafana queries VictoriaMetrics through its Prometheus-compatible API. vmalert evaluates alert rules against VictoriaMetrics and forwards notifications to Alertmanager.
 
-For local simulator runs, processed command IDs are stored in `data/robots/<ROBOT_ID>/processed_commands.txt`. Docker simulators store the same idempotency state under their mounted `/state` volume.
+For local simulator runs, processed command records are stored in `data/robots/<ROBOT_ID>/processed_commands.jsonl`. Docker simulators store the same idempotency state under their mounted `/state` volume.
 
 `ROBOT_ID` is the logical robot identity used in topics and payloads. The simulator uses a separate MQTT client ID, generated per process by default, so multiple local simulator processes do not take over each other's broker sessions. Set `MQTT_CLIENT_ID` only when you need a specific MQTT client identity.
 
@@ -121,7 +121,7 @@ Stateful container data is stored in `data/` on the host:
 - `data/robots/robot-02/`
 - `data/robots/robot-03/`
 
-Each robot directory contains `processed_commands.txt`, which stores command UUIDs the simulator has already handled. This makes command handling idempotent across duplicate MQTT deliveries and simulator restarts.
+Each robot directory contains `processed_commands.jsonl`, which stores JSON lines with command UUIDs plus lifecycle metadata the simulator has already handled. This makes command handling idempotent across duplicate MQTT deliveries and simulator restarts.
 
 ## Makefile commands
 
@@ -156,7 +156,7 @@ curl -X POST http://localhost:8089/robots/robot-01/commands \
   -d '{"command_type":"move","payload":{"target_position":{"x":100,"y":50}}}'
 ```
 
-The backend assigns every command a unique `command_id`. Robots persist command IDs before publishing `acknowledged`, so repeated MQTT deliveries of the same command are acknowledged but not executed again.
+The backend assigns every command a unique `command_id`. Robots persist status-aware command records before publishing `acknowledged`, so repeated MQTT deliveries of the same command are acknowledged but not executed again.
 
 Robot status in `GET /robots` and `GET /robots/{robot_id}` is computed from `last_seen_at`: `online` when the backend saw telemetry or state within 5 seconds, `stale` between 5 and 15 seconds, and `offline` after 15 seconds.
 
@@ -213,7 +213,7 @@ PUBLIC_BACKEND_WS_URL
 ## Current limitations
 
 - No authentication, authorization, TLS, or production hardening.
-- Command delivery is at-least-once through MQTT with robot-side duplicate command suppression based on persisted unique command IDs.
+- Command delivery is at-least-once through MQTT with robot-side duplicate command suppression based on persisted command records.
 - The simulator uses simple linear movement toward target positions rather than realistic robot physics.
 - The web app is intentionally minimal and does not include authentication, route protection, or a map visualization.
 - Grafana dashboard is intentionally minimal.

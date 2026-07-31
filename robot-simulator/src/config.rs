@@ -42,7 +42,7 @@ impl Config {
                 .context("METRICS_PORT must be a port")?,
             processed_commands_path: env_or(
                 "PROCESSED_COMMANDS_PATH",
-                "/state/processed_commands.txt",
+                "/state/processed_commands.jsonl",
             )
             .into(),
         })

@@ -216,13 +216,13 @@ For the first version:
 * robot simulators subscribe to their command topic;
 * the backend subscribes to robot telemetry and state topics;
 * the backend publishes commands with unique command IDs to robot command topics;
-* each robot persists processed command IDs and ignores duplicates for idempotent command handling.
+* each robot persists status-aware processed command records and ignores duplicates for idempotent command handling.
 
 Use QoS 0 for high-frequency telemetry.
 
 Use QoS 1 for commands, command results and important state events.
 
-Do not claim end-to-end exactly-once delivery. Use unique command identifiers and idempotent robot-side processing. Persist processed command IDs in each robot state directory so idempotency survives simulator restarts.
+Do not claim end-to-end exactly-once delivery. Use unique command identifiers and idempotent robot-side processing. Persist status-aware processed command records in each robot state directory so idempotency survives simulator restarts.
 
 Backend command messages sent to `robots/{robot_id}/commands` must include:
 
@@ -267,7 +267,7 @@ The simulator should:
 * decrease battery level gradually;
 * support temporary offline simulation;
 * reconnect automatically;
-* keep a small persistent local record of processed command IDs.
+* keep a small persistent local record of processed command records.
 
 The simulator does not need realistic robot physics.
 
@@ -621,7 +621,7 @@ The initial task is complete when:
 6. the backend can create a command through REST;
 7. every command has a unique ID;
 8. the command is delivered to the correct robot;
-9. the robot persists processed command IDs for idempotency;
+9. the robot persists status-aware command records for idempotency;
 10. duplicate command deliveries are ignored by the robot;
 11. the robot acknowledges and completes the command;
 12. command status is visible through the backend API;
