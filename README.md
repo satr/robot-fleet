@@ -147,6 +147,8 @@ PostgreSQL: localhost:5432
 
 ```sh
 curl http://localhost:8089/health
+curl http://localhost:8089/health/live
+curl http://localhost:8089/health/ready
 curl http://localhost:8089/robots
 curl http://localhost:8089/robots/robot-01
 websocket ws://localhost:8089/robots/stream
@@ -157,6 +159,8 @@ curl -X POST http://localhost:8089/robots/robot-01/commands \
 ```
 
 The backend assigns every command a unique `command_id`. Robots persist status-aware command records before publishing `acknowledged`, so repeated MQTT deliveries of the same command are acknowledged but not executed again.
+
+`GET /health` and `GET /health/live` are liveness checks. `GET /health/ready` is the readiness check used by Docker Compose and returns success only when PostgreSQL and MQTT are reachable.
 
 Robot status in `GET /robots` and `GET /robots/{robot_id}` is computed from `last_seen_at`: `online` when the backend saw telemetry or state within 5 seconds, `stale` between 5 and 15 seconds, and `offline` after 15 seconds.
 

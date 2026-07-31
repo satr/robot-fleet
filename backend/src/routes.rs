@@ -1,3 +1,5 @@
+use std::future::Future;
+
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -26,7 +28,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .allow_headers(Any);
 
     Router::new()
-        .route("/health", get(health))
+        .route("/health", get(liveness))
+        .route("/health/live", get(liveness))
+        .route("/health/ready", get(readiness))
         .route("/robots", get(list_robots))
         .route("/robots/stream", get(robot_stream))
         .route("/robots/:robot_id", get(get_robot).delete(delete_robot))
@@ -44,13 +48,57 @@ pub(crate) fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
+async fn liveness(State(state): State<AppState>) -> Json<HealthResponse> {
     state
         .metrics
         .http_requests
-        .with_label_values(&["/health"])
+        .with_label_values(&["/health/live"])
         .inc();
     Json(HealthResponse { status: "ok" })
+}
+
+async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<HealthResponse>) {
+    state
+        .metrics
+        .http_requests
+        .with_label_values(&["/health/ready"])
+        .inc();
+
+    let mqtt_ready = state.metrics.mqtt_connection_status.get() > 0.0;
+    let result = readiness_check(mqtt_ready, || async {
+        sqlx::query("SELECT 1").execute(&state.pool).await.map(|_| ())
+    })
+    .await;
+
+    match result {
+        Ok(()) => (StatusCode::OK, Json(HealthResponse { status: "ok" })),
+        Err(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(HealthResponse {
+                status: "unavailable",
+            }),
+        ),
+    }
+}
+
+async fn readiness_check<F, Fut>(mqtt_ready: bool, database_check: F) -> Result<(), ReadinessError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), sqlx::Error>>,
+{
+    if !mqtt_ready {
+        return Err(ReadinessError::MqttUnavailable);
+    }
+
+    database_check()
+        .await
+        .map_err(|_| ReadinessError::PostgresUnavailable)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ReadinessError {
+    MqttUnavailable,
+    PostgresUnavailable,
 }
 
 async fn list_robots(State(state): State<AppState>) -> Result<Json<Vec<Robot>>, ApiError> {
@@ -424,6 +472,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn readiness_endpoint_returns_service_unavailable_when_mqtt_is_down() {
+        let response = router(test_state())
+            .oneshot(
+                Request::builder()
+                    .uri("/health/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn readiness_check_short_circuits_before_database_access_when_mqtt_is_down() {
+        let database_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let database_called_clone = database_called.clone();
+
+        let result = readiness_check(false, move || {
+            let database_called = database_called_clone.clone();
+            async move {
+                database_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await;
+
+        assert_eq!(result, Err(ReadinessError::MqttUnavailable));
+        assert!(!database_called.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn readiness_check_accepts_ready_dependencies() {
+        let result = readiness_check(true, || async { Ok(()) }).await;
+        assert_eq!(result, Ok(()));
     }
 
     #[tokio::test]
