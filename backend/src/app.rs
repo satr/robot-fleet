@@ -49,7 +49,7 @@ pub(crate) async fn run() -> anyhow::Result<()> {
 
     tokio::spawn(mqtt::run_mqtt_ingestion(state.clone(), eventloop));
     tokio::spawn(mqtt::run_robot_status_broadcast(state.clone()));
-    tokio::spawn(mqtt::run_command_delivery(state.clone()));
+    tokio::spawn(mqtt::run_command_expiry(state.clone()));
 
     let app = routes::router(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], http_port));

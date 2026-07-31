@@ -15,6 +15,7 @@ use robot_fleet_common::types::{
 };
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
+use tracing::warn;
 
 use crate::{app, app::AppState, db, error::ApiError};
 
@@ -129,24 +130,15 @@ async fn create_command(
     }
     validate_command_request(&request)?;
 
-    db::insert_placeholder_robot(&state.pool, &robot_id).await?;
-    let command = db::create_command(
-        &state.pool,
+    let command = create_best_effort_command(
+        &state,
         &robot_id,
         &request.command_type,
         &request.payload,
         request.expires_at,
-    )
-    .await?;
-
-    publish_robot_command(
-        &state,
         format!("robots/{robot_id}/commands"),
-        &RobotCommandMessage::from(&command),
     )
     .await?;
-    state.metrics.commands_created.inc();
-    app::broadcast_robot_update(&state, &robot_id).await;
     Ok(Json(command))
 }
 
@@ -165,23 +157,15 @@ async fn create_simulated_event(
     }
     validate_simulated_event_request(&request)?;
 
-    db::insert_placeholder_robot(&state.pool, &robot_id).await?;
-    let command = db::create_command(
-        &state.pool,
+    let _command = create_best_effort_command(
+        &state,
         &robot_id,
         &request.command_type,
         &request.payload,
         request.expires_at,
-    )
-    .await?;
-    publish_robot_command(
-        &state,
         format!("robots/{robot_id}/simulated-events"),
-        &RobotCommandMessage::from(&command),
     )
     .await?;
-    state.metrics.commands_created.inc();
-    app::broadcast_robot_update(&state, &robot_id).await;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -199,13 +183,43 @@ fn is_simulated_event_command(command_type: &str) -> bool {
     )
 }
 
+async fn create_best_effort_command(
+    state: &AppState,
+    robot_id: &str,
+    command_type: &str,
+    payload: &Value,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    topic: String,
+) -> Result<CommandResponse, ApiError> {
+    db::insert_placeholder_robot(&state.pool, robot_id).await?;
+    let command =
+        db::create_command(&state.pool, robot_id, command_type, payload, expires_at).await?;
+    state.metrics.commands_created.inc();
+
+    let command =
+        match publish_robot_command(state, topic, &RobotCommandMessage::from(&command)).await {
+            Ok(()) => command,
+            Err(err) => {
+                warn!(
+                    command_id = %command.command_id,
+                    robot_id = %command.robot_id,
+                    error = %err,
+                    "failed to publish command"
+                );
+                db::mark_command_publish_failed(&state.pool, command.command_id).await?
+            }
+        };
+
+    app::broadcast_robot_update(state, robot_id).await;
+    Ok(command)
+}
+
 async fn publish_robot_command(
     state: &AppState,
     topic: String,
     message: &RobotCommandMessage,
-) -> Result<(), ApiError> {
-    let payload =
-        serde_json::to_vec(message).map_err(|err| ApiError::BadRequest(err.to_string()))?;
+) -> anyhow::Result<()> {
+    let payload = serde_json::to_vec(message)?;
     state
         .mqtt
         .publish(topic, rumqttc::QoS::AtLeastOnce, false, payload)
@@ -432,6 +446,7 @@ mod tests {
     fn command_status_transition_order_is_supported() {
         let transitions = [
             "created",
+            "publish_failed",
             "acknowledged",
             "running",
             "completed",

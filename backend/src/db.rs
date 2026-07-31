@@ -123,6 +123,24 @@ pub(crate) async fn create_command(
     Ok(command_from_row(row))
 }
 
+pub(crate) async fn mark_command_publish_failed(
+    pool: &PgPool,
+    command_id: Uuid,
+) -> Result<CommandResponse, sqlx::Error> {
+    let row = sqlx::query(
+        "UPDATE commands
+         SET status = 'publish_failed',
+             completed_at = COALESCE(completed_at, now())
+         WHERE command_id = $1
+           AND status = 'created'
+         RETURNING command_id, robot_id, command_type, payload, status, created_at, expires_at, acknowledged_at, completed_at",
+    )
+    .bind(command_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(command_from_row(row))
+}
+
 pub(crate) async fn list_commands(
     pool: &PgPool,
     robot_id: &str,
@@ -132,23 +150,6 @@ pub(crate) async fn list_commands(
          FROM commands WHERE robot_id = $1 ORDER BY created_at DESC LIMIT 100",
     )
     .bind(robot_id)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(command_from_row).collect())
-}
-
-pub(crate) async fn list_commands_due_for_retry(
-    pool: &PgPool,
-) -> Result<Vec<CommandResponse>, sqlx::Error> {
-    let rows = sqlx::query(
-        "SELECT command_id, robot_id, command_type, payload, status, created_at, expires_at, acknowledged_at, completed_at
-         FROM commands
-         WHERE status = 'created'
-           AND created_at <= now() - interval '2 seconds'
-           AND (expires_at IS NULL OR expires_at > now())
-           AND lower(replace(replace(command_type, ' ', '_'), '-', '_')) NOT IN ('extreme_temperature', 'robot_stack')
-         ORDER BY created_at ASC",
-    )
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(command_from_row).collect())
@@ -446,77 +447,87 @@ pub(crate) async fn apply_command_result(
     }
 
     let status_applied = match message.status.as_str() {
-        "acknowledged" => sqlx::query(
-            "UPDATE commands
+        "acknowledged" => {
+            sqlx::query(
+                "UPDATE commands
              SET status = CASE
                      WHEN status IN ('created', 'acknowledged') THEN 'acknowledged'
                      ELSE status
                  END,
                  acknowledged_at = COALESCE(acknowledged_at, $2)
              WHERE command_id = $1
-               AND status NOT IN ('completed', 'failed', 'expired')",
-        )
-        .bind(message.command_id)
-        .bind(message.occurred_at)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            > 0,
-        "completed" => sqlx::query(
-            "UPDATE commands
+               AND status NOT IN ('completed', 'failed', 'expired', 'publish_failed')",
+            )
+            .bind(message.command_id)
+            .bind(message.occurred_at)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0
+        }
+        "completed" => {
+            sqlx::query(
+                "UPDATE commands
              SET status = 'completed',
                  completed_at = COALESCE(completed_at, $2)
              WHERE command_id = $1
-               AND status NOT IN ('completed', 'failed', 'expired')",
-        )
-        .bind(message.command_id)
-        .bind(message.occurred_at)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            > 0,
-        "failed" | "expired" => sqlx::query(
-            "UPDATE commands
+               AND status NOT IN ('completed', 'failed', 'expired', 'publish_failed')",
+            )
+            .bind(message.command_id)
+            .bind(message.occurred_at)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0
+        }
+        "failed" | "expired" => {
+            sqlx::query(
+                "UPDATE commands
              SET status = $2,
                  completed_at = COALESCE(completed_at, $3)
              WHERE command_id = $1
-               AND status NOT IN ('completed', 'failed', 'expired')",
-        )
-        .bind(message.command_id)
-        .bind(&message.status)
-        .bind(message.occurred_at)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            > 0,
-        "stopped" => sqlx::query(
-            "UPDATE commands
+               AND status NOT IN ('completed', 'failed', 'expired', 'publish_failed')",
+            )
+            .bind(message.command_id)
+            .bind(&message.status)
+            .bind(message.occurred_at)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0
+        }
+        "stopped" => {
+            sqlx::query(
+                "UPDATE commands
              SET status = CASE
                      WHEN status NOT IN ('completed', 'failed', 'expired') THEN 'stopped'
                      ELSE status
                  END
              WHERE command_id = $1
-               AND status NOT IN ('completed', 'failed', 'expired')",
-        )
-        .bind(message.command_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            > 0,
-        "running" => sqlx::query(
-            "UPDATE commands
+               AND status NOT IN ('completed', 'failed', 'expired', 'publish_failed')",
+            )
+            .bind(message.command_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0
+        }
+        "running" => {
+            sqlx::query(
+                "UPDATE commands
              SET status = CASE
                      WHEN status IN ('created', 'acknowledged', 'running') THEN 'running'
                      ELSE status
                  END
              WHERE command_id = $1
-               AND status NOT IN ('completed', 'failed', 'expired')",
-        )
-        .bind(message.command_id)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected()
-            > 0,
+               AND status NOT IN ('completed', 'failed', 'expired', 'publish_failed')",
+            )
+            .bind(message.command_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected()
+                > 0
+        }
         other => {
             warn!(
                 robot_id = message.robot_id,

@@ -20,7 +20,7 @@ flowchart LR
     Grafana --> VictoriaMetrics
 ```
 
-Current implementation: the backend subscribes to robot MQTT telemetry/state/result/event topics, stores current robot state in PostgreSQL, stores historical telemetry and robot state transitions in TimescaleDB hypertables, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. Unacknowledged commands are republished every 2 seconds until expiry, and expiry without acknowledgement is counted as a metric. The SvelteKit web app shows live robot cards with position, set velocity, current velocity, direction, and operating state, and sends commands through the backend. vmalert evaluates robot sensor events and sends `extreme_temperature` and `robot_stack` alerts through Alertmanager to the backend webhook.
+Current implementation: the backend subscribes to robot MQTT telemetry/state/result/event topics, stores current robot state in PostgreSQL, stores historical telemetry and robot state transitions in TimescaleDB hypertables, exposes REST and WebSocket APIs, and publishes commands with unique IDs to robot MQTT command topics. Command submission is best-effort: the backend stores the command first, attempts a single MQTT publish, and marks the record `publish_failed` if that publish fails. Expiry without acknowledgement is counted as a metric. The SvelteKit web app shows live robot cards with position, set velocity, current velocity, direction, and operating state, and sends commands through the backend. vmalert evaluates robot sensor events and sends `extreme_temperature` and `robot_stack` alerts through Alertmanager to the backend webhook.
 
 ![Web app dashboard](img/robot-fleet-dashboard.png)
 
@@ -218,7 +218,7 @@ PUBLIC_BACKEND_WS_URL
 ## Current limitations
 
 - No authentication, authorization, TLS, or production hardening.
-- Command delivery is at-least-once through MQTT with robot-side duplicate command suppression based on persisted command records.
+- Command delivery is best-effort through MQTT; failed publishes are recorded as `publish_failed`.
 - The simulator uses simple linear movement toward target positions rather than realistic robot physics.
 - The web app is intentionally minimal and does not include authentication, route protection, or a map visualization.
 - Grafana dashboard is intentionally minimal.
