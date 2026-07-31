@@ -66,7 +66,10 @@ async fn readiness(State(state): State<AppState>) -> (StatusCode, Json<HealthRes
 
     let mqtt_ready = state.metrics.mqtt_connection_status.get() > 0.0;
     let result = readiness_check(mqtt_ready, || async {
-        sqlx::query("SELECT 1").execute(&state.pool).await.map(|_| ())
+        sqlx::query("SELECT 1")
+            .execute(&state.pool)
+            .await
+            .map(|_| ())
     })
     .await;
 

@@ -654,7 +654,6 @@ async fn handle_simulated_event_command(
         .await?;
     }
 
-    publish_command_result(client, config, command, "running", "command_running").await?;
     publish_state(client, config, state).await?;
     {
         let mut guard = state.lock().await;
@@ -662,7 +661,6 @@ async fn handle_simulated_event_command(
     }
     publish_state(client, config, state).await?;
     publish_sensor_event(client, config, metrics, command, &event_type, &priority).await?;
-    publish_command_result(client, config, command, "completed", "command_completed").await?;
     Ok(())
 }
 
