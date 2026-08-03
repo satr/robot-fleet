@@ -156,13 +156,10 @@ mod tests {
     use rumqttc::{AsyncClient, MqttOptions};
     use serde_json::json;
     use sqlx::{postgres::PgPoolOptions, PgPool, Row};
-    use tokio::sync::OnceCell;
     use uuid::Uuid;
 
     use super::handle_mqtt_message;
     use crate::{app::AppState, db, metrics::Metrics};
-
-    static TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
 
     #[derive(Clone)]
     struct TestConfig {
@@ -182,22 +179,15 @@ mod tests {
     }
 
     async fn test_state(config: &TestConfig) -> AppState {
-        let database_url = config.database_url.clone();
-        let pool = TEST_POOL
-            .get_or_init(|| async move {
-                let pool = PgPoolOptions::new()
-                    .max_connections(5)
-                    .connect(&database_url)
-                    .await
-                    .expect("connect to PostgreSQL");
-                sqlx::migrate!("./migrations")
-                    .run(&pool)
-                    .await
-                    .expect("run migrations");
-                pool
-            })
+        let pool = PgPoolOptions::new()
+            .max_connections(50)
+            .connect(&config.database_url)
             .await
-            .clone();
+            .expect("connect to PostgreSQL");
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .expect("run migrations");
         let metrics = Arc::new(Metrics::new().expect("metrics"));
         let (mqtt, _) = AsyncClient::new(
             MqttOptions::new(

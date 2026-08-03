@@ -766,20 +766,7 @@ async fn publish_sensor_event(
     event_type: &str,
     priority: &str,
 ) -> anyhow::Result<()> {
-    let message = RobotSensorEventMessage {
-        event_id: uuid::Uuid::new_v4(),
-        robot_id: config.robot_id.clone(),
-        event_type: event_type.into(),
-        priority: priority.into(),
-        command_id: None,
-        payload: json!({
-            "source": "robot_simulator",
-            "safe_state_command": "get_to_safe_state",
-            "simulated_by_command_type": command.command_type,
-            "simulation_request_id": command.command_id,
-        }),
-        occurred_at: Utc::now(),
-    };
+    let message = sensor_event_message(&config.robot_id, command, event_type, priority);
     let topic = sensor_event_topic(&config.robot_id, priority);
     client
         .publish(
@@ -794,6 +781,28 @@ async fn publish_sensor_event(
         .with_label_values(&[event_type, priority])
         .inc();
     Ok(())
+}
+
+fn sensor_event_message(
+    robot_id: &str,
+    command: &RobotCommandMessage,
+    event_type: &str,
+    priority: &str,
+) -> RobotSensorEventMessage {
+    RobotSensorEventMessage {
+        event_id: uuid::Uuid::new_v4(),
+        robot_id: robot_id.into(),
+        event_type: event_type.into(),
+        priority: priority.into(),
+        command_id: None,
+        payload: json!({
+            "source": "robot_simulator",
+            "safe_state_command": "get_to_safe_state",
+            "simulated_by_command_type": command.command_type,
+            "simulation_request_id": command.command_id,
+        }),
+        occurred_at: Utc::now(),
+    }
 }
 
 fn command_subscription_topics(robot_id: &str) -> [String; 3] {
@@ -1044,8 +1053,8 @@ mod tests {
 
     use super::{
         command_subscription_topics, is_simulated_event_topic, normalize_command_type,
-        sensor_event_topic, startup_recovery_payload, update_command_record_status,
-        STARTUP_RECOVERY_REASON,
+        sensor_event_message, sensor_event_topic, startup_recovery_payload,
+        update_command_record_status, STARTUP_RECOVERY_REASON,
     };
     use crate::persistence::{ProcessedCommandRecord, ProcessedCommandStatus};
     use crate::state::RobotState;
@@ -1107,6 +1116,23 @@ mod tests {
     #[test]
     fn simulated_event_commands_are_normalized() {
         assert_eq!(normalize_command_type("Robot Stack"), "robot_stack");
+    }
+
+    #[test]
+    fn simulated_event_message_omits_command_id_and_keeps_request_id() {
+        let command_id = Uuid::new_v4();
+        let command = robot_fleet_common::types::RobotCommandMessage {
+            command_id,
+            robot_id: "robot-01".into(),
+            command_type: "extreme_temperature".into(),
+            payload: json!({}),
+            expires_at: None,
+        };
+
+        let message = sensor_event_message("robot-01", &command, "extreme_temperature", "high");
+
+        assert_eq!(message.command_id, None);
+        assert_eq!(message.payload["simulation_request_id"], json!(command_id));
     }
 
     #[test]

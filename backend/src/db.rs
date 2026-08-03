@@ -57,7 +57,7 @@ pub(crate) async fn connect_postgres(database_url: &str) -> anyhow::Result<PgPoo
     let mut last_error = None;
     for attempt in 1..=30 {
         match PgPoolOptions::new()
-            .max_connections(5)
+            .max_connections(50)
             .connect(database_url)
             .await
         {
@@ -409,7 +409,7 @@ pub(crate) async fn insert_robot_sensor_event(
     message: &RobotSensorEventMessage,
 ) -> Result<(), sqlx::Error> {
     insert_placeholder_robot(&state.pool, &message.robot_id).await?;
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO robot_sensor_events (event_id, robot_id, event_type, priority, command_id, payload, occurred_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (event_id, occurred_at) DO NOTHING",
@@ -423,11 +423,13 @@ pub(crate) async fn insert_robot_sensor_event(
     .bind(message.occurred_at)
     .execute(&state.pool)
     .await?;
-    state
-        .metrics
-        .sensor_events_received
-        .with_label_values(&[&message.event_type, &message.priority, &message.robot_id])
-        .inc();
+    if result.rows_affected() == 1 {
+        state
+            .metrics
+            .sensor_events_received
+            .with_label_values(&[&message.event_type, &message.priority, &message.robot_id])
+            .inc();
+    }
     Ok(())
 }
 
@@ -801,7 +803,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        command_state_projection, insert_robot_sensor_event,
+        command_state_projection, insert_placeholder_robot, insert_robot_sensor_event,
         robot_state_history_snapshot_is_duplicate, CommandStateProjection,
         RobotStateHistorySnapshot,
     };
@@ -831,71 +833,14 @@ mod tests {
         let pool = SENSOR_EVENT_TEST_POOL
             .get_or_init(|| async move {
                 let pool = PgPoolOptions::new()
-                    .max_connections(5)
+                    .max_connections(50)
                     .connect(&database_url)
                     .await
                     .expect("connect to PostgreSQL");
-
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS robots (
-                        robot_id TEXT PRIMARY KEY,
-                        name TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        battery_level DOUBLE PRECISION NOT NULL DEFAULT 0,
-                        position_x DOUBLE PRECISION,
-                        position_y DOUBLE PRECISION,
-                        set_velocity DOUBLE PRECISION,
-                        velocity DOUBLE PRECISION,
-                        direction_degrees DOUBLE PRECISION,
-                        stop BOOLEAN NOT NULL DEFAULT FALSE,
-                        target_position_x DOUBLE PRECISION,
-                        target_position_y DOUBLE PRECISION,
-                        current_mission TEXT,
-                        state TEXT NOT NULL DEFAULT 'idle',
-                        current_command TEXT,
-                        current_command_status TEXT,
-                        last_seen_at TIMESTAMPTZ,
-                        software_version TEXT NOT NULL,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-                    )",
-                )
-                .execute(&pool)
-                .await
-                .expect("create robots table");
-
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS commands (
-                        command_id UUID PRIMARY KEY,
-                        robot_id TEXT NOT NULL REFERENCES robots(robot_id) ON DELETE CASCADE,
-                        command_type TEXT NOT NULL,
-                        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        status TEXT NOT NULL DEFAULT 'created',
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        expires_at TIMESTAMPTZ,
-                        acknowledged_at TIMESTAMPTZ,
-                        completed_at TIMESTAMPTZ
-                    )",
-                )
-                .execute(&pool)
-                .await
-                .expect("create commands table");
-
-                sqlx::query(
-                    "CREATE TABLE IF NOT EXISTS robot_sensor_events (
-                        event_id UUID NOT NULL,
-                        robot_id TEXT NOT NULL REFERENCES robots(robot_id) ON DELETE CASCADE,
-                        event_type TEXT NOT NULL,
-                        priority TEXT NOT NULL,
-                        command_id UUID REFERENCES commands(command_id) ON DELETE SET NULL,
-                        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        occurred_at TIMESTAMPTZ NOT NULL,
-                        PRIMARY KEY (event_id, occurred_at)
-                    )",
-                )
-                .execute(&pool)
-                .await
-                .expect("create robot_sensor_events table");
+                sqlx::migrate!("./migrations")
+                    .run(&pool)
+                    .await
+                    .expect("run migrations");
 
                 pool
             })
@@ -1023,38 +968,85 @@ mod tests {
         let state = sensor_event_test_state(&config).await;
 
         let robot_id = format!("robot-{}", Uuid::new_v4());
-        let message = RobotSensorEventMessage {
-            event_id: Uuid::new_v4(),
-            robot_id: robot_id.clone(),
-            event_type: "extreme_temperature".into(),
-            priority: "high".into(),
-            command_id: None,
-            payload: json!({
-                "source": "test",
-                "simulation_request_id": Uuid::new_v4(),
-            }),
-            occurred_at: Utc::now(),
-        };
-
-        insert_robot_sensor_event(&state, &message)
+        insert_placeholder_robot(&state.pool, &robot_id)
             .await
-            .expect("insert sensor event");
+            .expect("ensure test robot exists");
 
-        let row = sqlx::query(
-            "SELECT command_id, robot_id, event_type, priority, payload
-             FROM robot_sensor_events
-             WHERE event_id = $1 AND occurred_at = $2",
-        )
-        .bind(message.event_id)
-        .bind(message.occurred_at)
-        .fetch_one(&state.pool)
-        .await
-        .expect("sensor event row");
+        for (event_type, priority) in [("extreme_temperature", "high"), ("robot_stack", "normal")] {
+            let simulation_request_id = Uuid::new_v4();
+            let message = RobotSensorEventMessage {
+                event_id: Uuid::new_v4(),
+                robot_id: robot_id.clone(),
+                event_type: event_type.into(),
+                priority: priority.into(),
+                command_id: None,
+                payload: json!({
+                    "source": "test",
+                    "simulation_request_id": simulation_request_id,
+                }),
+                occurred_at: Utc::now(),
+            };
 
-        let command_id: Option<Uuid> = row.get("command_id");
-        assert!(command_id.is_none());
-        assert_eq!(row.get::<String, _>("robot_id"), robot_id);
-        assert_eq!(row.get::<String, _>("event_type"), "extreme_temperature");
-        assert_eq!(row.get::<String, _>("priority"), "high");
+            insert_robot_sensor_event(&state, &message)
+                .await
+                .expect("insert sensor event");
+            assert_eq!(
+                state
+                    .metrics
+                    .sensor_events_received
+                    .with_label_values(&[&message.event_type, &message.priority, &message.robot_id])
+                    .get(),
+                1
+            );
+
+            let row_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM robot_sensor_events WHERE event_id = $1")
+                    .bind(message.event_id)
+                    .fetch_one(&state.pool)
+                    .await
+                    .expect("count sensor events");
+            assert_eq!(row_count, 1);
+
+            insert_robot_sensor_event(&state, &message)
+                .await
+                .expect("insert duplicate sensor event");
+            assert_eq!(
+                state
+                    .metrics
+                    .sensor_events_received
+                    .with_label_values(&[&message.event_type, &message.priority, &message.robot_id])
+                    .get(),
+                1
+            );
+
+            let row_count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM robot_sensor_events WHERE event_id = $1")
+                    .bind(message.event_id)
+                    .fetch_one(&state.pool)
+                    .await
+                    .expect("count duplicate sensor events");
+            assert_eq!(row_count, 1);
+
+            let row = sqlx::query(
+                "SELECT command_id, robot_id, event_type, priority, payload->>'simulation_request_id' AS simulation_request_id
+                 FROM robot_sensor_events
+                 WHERE event_id = $1 AND occurred_at = $2",
+            )
+            .bind(message.event_id)
+            .bind(message.occurred_at)
+            .fetch_one(&state.pool)
+            .await
+            .expect("sensor event row");
+
+            let command_id: Option<Uuid> = row.get("command_id");
+            assert!(command_id.is_none());
+            assert_eq!(row.get::<String, _>("robot_id"), robot_id);
+            assert_eq!(row.get::<String, _>("event_type"), event_type);
+            assert_eq!(row.get::<String, _>("priority"), priority);
+            assert_eq!(
+                row.get::<String, _>("simulation_request_id"),
+                simulation_request_id.to_string()
+            );
+        }
     }
 }
