@@ -12,7 +12,7 @@ WEB_PORT ?= 5173
 PUBLIC_BACKEND_HTTP_URL ?= http://localhost:8089
 PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
 
-.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-build docker-up docker-down docker-logs clean
+.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs clean
 
 help:
 	@echo "Robot Fleet commands:"
@@ -140,10 +140,15 @@ test:
 	cargo test --workspace
 	$(MAKE) web-check
 
-docker-build:
+docker-prereqs:
+	docker pull rust:1-bookworm
+	docker pull debian:bookworm-slim
+	docker pull node:22-bookworm-slim
+
+docker-build: docker-prereqs
 	docker compose build
 
-docker-up:
+docker-up: docker-prereqs
 	docker compose up --build -d
 
 docker-down:
