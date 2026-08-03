@@ -517,12 +517,14 @@ pub(crate) async fn apply_command_result(
                 "UPDATE commands
              SET status = CASE
                      WHEN status IN ('created', 'acknowledged', 'running') THEN 'running'
+                     WHEN status = 'stopped' AND $2 = 'command_resumed' THEN 'running'
                      ELSE status
                  END
              WHERE command_id = $1
                AND status NOT IN ('completed', 'failed', 'expired', 'publish_failed')",
             )
             .bind(message.command_id)
+            .bind(&message.event_type)
             .execute(&mut *tx)
             .await?
             .rows_affected()

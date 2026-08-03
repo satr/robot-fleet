@@ -366,4 +366,99 @@ mod tests {
                 .expect("count command events");
         assert_eq!(event_count, 3);
     }
+
+    #[tokio::test]
+    async fn mqtt_command_resume_only_revives_stopped_commands() {
+        let Some(state) = test_state().await else {
+            return;
+        };
+
+        let robot_id = format!("robot-{}", Uuid::new_v4());
+        db::insert_placeholder_robot(&state.pool, &robot_id)
+            .await
+            .expect("insert placeholder robot");
+
+        let command = db::create_command(
+            &state.pool,
+            &robot_id,
+            "move",
+            &json!({ "target_position_x": 10.0, "target_position_y": 5.0 }),
+            None,
+        )
+        .await
+        .expect("create command");
+
+        let topic = format!("robots/{robot_id}/command-results");
+        for (status, event_type) in [
+            ("acknowledged", "command_acknowledged"),
+            ("running", "command_running"),
+            ("stopped", "command_stopped"),
+        ] {
+            let message = command_result(
+                command.command_id,
+                &robot_id,
+                status,
+                event_type,
+                json!({
+                    "command_type": "move",
+                    "payload": { "target_position_x": 10.0, "target_position_y": 5.0 }
+                }),
+            );
+            handle_mqtt_message(
+                &state,
+                &topic,
+                &serde_json::to_vec(&message).expect("serialize command result"),
+            )
+            .await
+            .expect("handle command result");
+        }
+
+        let stale_running = command_result(
+            command.command_id,
+            &robot_id,
+            "running",
+            "command_running",
+            json!({
+                "command_type": "move",
+                "payload": { "target_position_x": 10.0, "target_position_y": 5.0 }
+            }),
+        );
+        handle_mqtt_message(
+            &state,
+            &topic,
+            &serde_json::to_vec(&stale_running).expect("serialize command result"),
+        )
+        .await
+        .expect("handle stale running command result");
+
+        let (status, acknowledged_at, completed_at) =
+            command_row(&state.pool, command.command_id).await;
+        assert_eq!(status, "stopped");
+        assert!(acknowledged_at.is_some());
+        assert!(completed_at.is_none());
+
+        let resumed = command_result(
+            command.command_id,
+            &robot_id,
+            "running",
+            "command_resumed",
+            json!({
+                "command_type": "move",
+                "payload": { "target_position_x": 10.0, "target_position_y": 5.0 }
+            }),
+        );
+        handle_mqtt_message(
+            &state,
+            &topic,
+            &serde_json::to_vec(&resumed).expect("serialize command result"),
+        )
+        .await
+        .expect("handle resumed command result");
+
+        let (status, acknowledged_at, completed_at) =
+            command_row(&state.pool, command.command_id).await;
+        assert_eq!(status, "running");
+        assert!(acknowledged_at.is_some());
+        assert!(completed_at.is_none());
+    }
 }
