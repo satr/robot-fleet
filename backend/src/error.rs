@@ -13,6 +13,8 @@ pub(crate) enum ApiError {
     BadRequest(String),
     #[error(transparent)]
     Database(#[from] sqlx::Error),
+    #[error("internal server error")]
+    Internal(#[from] anyhow::Error),
 }
 
 impl IntoResponse for ApiError {
@@ -20,7 +22,7 @@ impl IntoResponse for ApiError {
         let status = match self {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            ApiError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Database(_) | ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()
     }

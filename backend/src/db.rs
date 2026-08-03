@@ -17,7 +17,10 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 
-const ROBOT_VIEW_SELECT: &str = "SELECT
+const SIMULATED_EVENT_COMMAND_FILTER: &str =
+    "lower(replace(replace(command_type, ' ', '_'), '-', '_')) NOT IN ('extreme_temperature', 'robot_stack')";
+
+const ROBOT_VIEW_SELECT_BASE: &str = "SELECT
      r.robot_id,
      r.name,
      r.status,
@@ -42,10 +45,13 @@ const ROBOT_VIEW_SELECT: &str = "SELECT
  LEFT JOIN LATERAL (
      SELECT command_type, status
      FROM commands
-     WHERE commands.robot_id = r.robot_id
-     ORDER BY created_at DESC
-     LIMIT 1
- ) latest_command ON TRUE";
+     WHERE commands.robot_id = r.robot_id";
+
+fn robot_view_select() -> String {
+    format!(
+        "{ROBOT_VIEW_SELECT_BASE} AND {SIMULATED_EVENT_COMMAND_FILTER} ORDER BY created_at DESC LIMIT 1) latest_command ON TRUE"
+    )
+}
 
 pub(crate) async fn connect_postgres(database_url: &str) -> anyhow::Result<PgPool> {
     let mut last_error = None;
@@ -68,7 +74,7 @@ pub(crate) async fn connect_postgres(database_url: &str) -> anyhow::Result<PgPoo
 }
 
 pub(crate) async fn list_robot_views(pool: &PgPool) -> Result<Vec<Robot>, sqlx::Error> {
-    let rows = sqlx::query(&format!("{ROBOT_VIEW_SELECT} ORDER BY r.robot_id"))
+    let rows = sqlx::query(&format!("{} ORDER BY r.robot_id", robot_view_select()))
         .fetch_all(pool)
         .await?;
     Ok(rows.into_iter().map(robot_from_row).collect())
@@ -78,7 +84,7 @@ pub(crate) async fn get_robot_view(
     pool: &PgPool,
     robot_id: &str,
 ) -> Result<Option<Robot>, sqlx::Error> {
-    let row = sqlx::query(&format!("{ROBOT_VIEW_SELECT} WHERE r.robot_id = $1"))
+    let row = sqlx::query(&format!("{} WHERE r.robot_id = $1", robot_view_select()))
         .bind(robot_id)
         .fetch_optional(pool)
         .await?;
@@ -145,10 +151,14 @@ pub(crate) async fn list_commands(
     pool: &PgPool,
     robot_id: &str,
 ) -> Result<Vec<CommandResponse>, sqlx::Error> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         "SELECT command_id, robot_id, command_type, payload, status, created_at, expires_at, acknowledged_at, completed_at
-         FROM commands WHERE robot_id = $1 ORDER BY created_at DESC LIMIT 100",
-    )
+         FROM commands
+         WHERE robot_id = $1
+           AND {SIMULATED_EVENT_COMMAND_FILTER}
+         ORDER BY created_at DESC
+         LIMIT 100"
+    ))
     .bind(robot_id)
     .fetch_all(pool)
     .await?;
@@ -158,16 +168,16 @@ pub(crate) async fn list_commands(
 pub(crate) async fn expire_unacknowledged_commands(
     state: &AppState,
 ) -> Result<Vec<CommandResponse>, sqlx::Error> {
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         "UPDATE commands
          SET status = 'expired',
              completed_at = COALESCE(completed_at, now())
          WHERE status = 'created'
            AND expires_at IS NOT NULL
            AND expires_at <= now()
-           AND lower(replace(replace(command_type, ' ', '_'), '-', '_')) NOT IN ('extreme_temperature', 'robot_stack')
-         RETURNING command_id, robot_id, command_type, payload, status, created_at, expires_at, acknowledged_at, completed_at",
-    )
+           AND {SIMULATED_EVENT_COMMAND_FILTER}
+         RETURNING command_id, robot_id, command_type, payload, status, created_at, expires_at, acknowledged_at, completed_at"
+    ))
     .fetch_all(&state.pool)
     .await?;
     Ok(rows.into_iter().map(command_from_row).collect())

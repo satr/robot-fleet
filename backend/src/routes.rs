@@ -19,6 +19,7 @@ use robot_fleet_common::types::{
 use serde_json::Value;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
+use uuid::Uuid;
 
 use crate::{app, app::AppState, db, error::ApiError};
 
@@ -211,15 +212,8 @@ async fn create_simulated_event(
     }
     validate_simulated_event_request(&request)?;
 
-    let _command = create_command_for_robot(
-        &state,
-        &robot_id,
-        &request.command_type,
-        &request.payload,
-        request.expires_at,
-        format!("robots/{robot_id}/simulated-events"),
-    )
-    .await?;
+    let _ = ensure_robot_accepts_commands(db::get_robot_view(&state.pool, &robot_id).await?)?;
+    publish_simulated_event(&state, &robot_id, &request).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -273,6 +267,31 @@ async fn create_command_for_robot(
 
     app::broadcast_robot_update(state, robot_id).await;
     Ok(command)
+}
+
+fn simulated_event_message(robot_id: &str, request: &CreateCommandRequest) -> RobotCommandMessage {
+    RobotCommandMessage {
+        command_id: Uuid::new_v4(),
+        robot_id: robot_id.into(),
+        command_type: request.command_type.clone(),
+        payload: request.payload.clone(),
+        expires_at: request.expires_at,
+    }
+}
+
+async fn publish_simulated_event(
+    state: &AppState,
+    robot_id: &str,
+    request: &CreateCommandRequest,
+) -> Result<(), ApiError> {
+    let message = simulated_event_message(robot_id, request);
+    publish_robot_command(
+        state,
+        format!("robots/{robot_id}/simulated-events"),
+        &message,
+    )
+    .await?;
+    Ok(())
 }
 
 fn ensure_robot_accepts_commands(robot: Option<Robot>) -> Result<Robot, ApiError> {
@@ -681,5 +700,21 @@ mod tests {
         assert_eq!(payload["command_type"], "dock");
         assert_eq!(payload["payload"], json!({ "station": "A" }));
         assert!(payload.get("status").is_none());
+    }
+
+    #[test]
+    fn simulated_event_message_keeps_event_fields_and_generates_id() {
+        let request = CreateCommandRequest {
+            command_type: "robot_stack".into(),
+            payload: json!({ "severity": "high" }),
+            expires_at: None,
+        };
+
+        let message = simulated_event_message("robot-01", &request);
+        assert_eq!(message.robot_id, "robot-01");
+        assert_eq!(message.command_type, "robot_stack");
+        assert_eq!(message.payload, json!({ "severity": "high" }));
+        assert!(message.expires_at.is_none());
+        assert!(!message.command_id.is_nil());
     }
 }

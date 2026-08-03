@@ -6,7 +6,7 @@ What is implemented: a Rust backend, a SvelteKit operator shell, MQTT-connected 
 
 What is excluded on purpose: authentication, TLS, a production frontend, Kafka in the implemented path, realistic robot physics, and exactly-once execution claims.
 
-Guarantees this prototype does make: commands are written before publish, robot receipts are idempotent, duplicate QoS 1 deliveries of operational commands do not execute twice, simulated events are deliberately untracked, and readiness reflects the actual DB and MQTT dependencies.
+Guarantees this prototype does make: commands are written before publish, robot receipts are idempotent, duplicate QoS 1 deliveries of operational commands do not execute twice, simulated events are deliberately untracked in the commands table, and readiness reflects the actual DB and MQTT dependencies.
 
 Guarantees it does not make: end-to-end exactly-once delivery, lossless delivery across arbitrary crashes, or production-grade security and scaling.
 
@@ -246,7 +246,7 @@ Command creation now requires the target robot to exist and not be offline, and 
 
 Robot status in `GET /robots` and `GET /robots/{robot_id}` is computed from `last_seen_at`: `online` when the backend saw telemetry or state within 5 seconds, `stale` between 5 and 15 seconds, and `offline` after 15 seconds.
 
-The web app reads `GET /robots` for the initial snapshot and then listens to `GET /robots/stream` as a WebSocket for live robot updates. It sends `move`, `set_velocity`, and `stop` commands through `POST /robots/{robot_id}/commands`, and sends `extreme_temperature` and `robot_stack` through `POST /robots/{robot_id}/simulated-events`. Offline robots can be deleted through `DELETE /robots/{robot_id}`.
+The web app reads `GET /robots` for the initial snapshot and then listens to `GET /robots/stream` as a WebSocket for live robot updates. It sends `move`, `set_velocity`, and `stop` commands through `POST /robots/{robot_id}/commands`, and sends `extreme_temperature` and `robot_stack` as simulated events through `POST /robots/{robot_id}/simulated-events`. Offline robots can be deleted through `DELETE /robots/{robot_id}`.
 
 ## MQTT topics
 
@@ -256,7 +256,7 @@ robots/{robot_id}/state              QoS 1
 robots/{robot_id}/events             QoS 1 normal-priority sensor events
 robots/{robot_id}/events/high-priority QoS 1 high-priority sensor events
 robots/{robot_id}/commands           QoS 1
-robots/{robot_id}/simulated-events    QoS 1 command-initiated simulator event requests
+robots/{robot_id}/simulated-events    QoS 1 simulated event requests
 robots/{robot_id}/command-results     QoS 1
 ```
 
@@ -279,7 +279,7 @@ Command messages sent by the backend to `robots/{robot_id}/commands` include the
 
 Simulator command lifecycle states are published to `robots/{robot_id}/command-results` as `acknowledged`, `running`, `completed`, `failed`, `expired`, or `stopped`. `move` runs until the robot reaches the target at the current `set_velocity`; a later `move` overrides the active move and marks the prior move `stopped`. `set_velocity` can run while a move is active and immediately changes the operating velocity used by that move. `stop` with `true` pauses motion and reports the active move as `stopped`; `stop` with `false` resumes toward the last target position using the current set velocity.
 
-The simulator also accepts `extreme_temperature` and `robot_stack` event simulation requests on `robots/{robot_id}/simulated-events` and the legacy `robots/{robot_id}/commands/high-priority` topic. `extreme_temperature` publishes the resulting sensor event to `robots/{robot_id}/events/high-priority`, which the backend subscribes to separately; `robot_stack` publishes to the normal `robots/{robot_id}/events` topic. Both stop the active move, run the internal `get_to_safe_state` safe-state command, publish robot state as `idle in safe state`, and emit a sensor event metric (`robot_sensor_events_total`) consumed by the Grafana dashboard and vmalert rules. These simulated events are handled separately and are not written to `processed_commands.json`.
+The simulator also accepts `extreme_temperature` and `robot_stack` event simulation requests on `robots/{robot_id}/simulated-events` and the legacy `robots/{robot_id}/commands/high-priority` topic. `extreme_temperature` publishes the resulting sensor event to `robots/{robot_id}/events/high-priority`, which the backend subscribes to separately; `robot_stack` publishes to the normal `robots/{robot_id}/events` topic. Both stop the active move, run the internal `get_to_safe_state` safe-state command, publish robot state as `idle in safe state`, and emit a sensor event metric (`robot_sensor_events_total`) consumed by the Grafana dashboard and vmalert rules. These simulated events are handled separately, are not written to `processed_commands.json`, and are not stored as commands in PostgreSQL.
 
 ## Configuration
 
