@@ -159,6 +159,12 @@ impl RobotState {
                 self.stop = stop;
                 if !stop {
                     self.safe_state = false;
+                    if self.current_mission.is_none()
+                        && self.target_position_x.is_some()
+                        && self.target_position_y.is_some()
+                    {
+                        self.current_mission = Some("move".into());
+                    }
                 }
                 self.update_motion_state();
                 Ok(AppliedCommand::Stop {
@@ -283,9 +289,7 @@ impl RobotState {
         event_type: &str,
         priority: &str,
     ) -> AppliedCommand {
-        let interrupted_move_command_id = self.current_move_command_id.take();
-        self.target_position_x = None;
-        self.target_position_y = None;
+        let interrupted_move_command_id = self.current_move_command_id;
         self.velocity = 0.0;
         self.stop = true;
         self.safe_state = false;
@@ -615,6 +619,9 @@ mod tests {
                 interrupted_move_command_id: Some(move_command_id)
             }
         );
+        assert_eq!(state.current_move_command_id, Some(move_command_id));
+        assert_eq!(state.target_position_x, Some(10.0));
+        assert_eq!(state.target_position_y, Some(0.0));
         assert_eq!(state.velocity, 0.0);
         assert!(state.stop);
         assert_eq!(state.current_mission.as_deref(), Some("get_to_safe_state"));
@@ -624,6 +631,39 @@ mod tests {
 
         assert_eq!(state.current_mission, None);
         assert_eq!(state.state, "idle in safe state");
+    }
+
+    #[test]
+    fn resume_after_simulated_event_restores_motion() {
+        let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
+        state
+            .apply_command(
+                Uuid::new_v4(),
+                "set_velocity",
+                &json!({ "set_velocity": 4 }),
+            )
+            .expect("set_velocity command");
+        state
+            .apply_command(
+                Uuid::new_v4(),
+                "move",
+                &json!({
+                    "target_position_x": 10,
+                    "target_position_y": 0
+                }),
+            )
+            .expect("move command");
+
+        state.start_simulated_event("extreme_temperature", "high");
+        state.finish_safe_state();
+
+        state
+            .apply_command(Uuid::new_v4(), "stop", &json!({ "stop": false }))
+            .expect("resume command");
+
+        assert!(!state.stop);
+        assert_eq!(state.current_mission.as_deref(), Some("move"));
+        assert_eq!(state.velocity, 4.0);
     }
 
     #[test]
