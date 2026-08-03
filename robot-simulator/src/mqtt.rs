@@ -16,7 +16,7 @@ use tokio::{
     sync::Mutex,
     time::{interval, sleep, MissedTickBehavior},
 };
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::{
     config::Config,
@@ -314,332 +314,345 @@ async fn handle_command(
         let guard = state.lock().await;
         guard.command_is_processing(command_id)
     };
-    if let Some(existing_record) = &existing_record {
-        if !existing_record.matches_command(&command) {
-            let cancelled_record = existing_record.with_command_and_status(
-                &command,
-                ProcessedCommandStatus::Cancelled,
-                Utc::now(),
-            );
-            persist_processed_command_journal(
-                state,
-                &config.journal_lock,
-                &config.processed_commands_path,
-                |guard| {
-                    guard.remember_processed_command(cancelled_record.clone());
-                    Ok(cancelled_record.clone())
-                },
-            )
-            .await?;
-            info!(
-                robot_id = config.robot_id,
-                command_id = %command.command_id,
-                "command arguments changed; marking command cancelled"
-            );
-            publish_command_result_with_payload(
-                client,
-                config,
-                command.command_id,
-                "failed",
-                "command_cancelled",
-                json!({
-                    "command_type": command.command_type,
-                    "payload": command.payload,
-                    "reason": "command_arguments_changed",
-                }),
-            )
-            .await?;
-            return Ok(());
-        }
-
-        let is_active_move = existing_record.status == ProcessedCommandStatus::Running
-            && normalize_command_type(&existing_record.command_type) == "move"
-            && {
-                let guard = state.lock().await;
-                guard.move_command_is_active(command_id)
-            };
-        let can_recover =
-            !existing_record.status.is_terminal() && !is_processing && !is_active_move;
-        if !can_recover {
-            let persisted_status = existing_record.status.duplicate_response();
-            if persisted_status != existing_record.status {
-                let updated_record = existing_record.with_status(persisted_status, Utc::now());
+    let result = async {
+        if let Some(existing_record) = &existing_record {
+            if !existing_record.matches_command(&command) {
+                let cancelled_record = existing_record.with_command_and_status(
+                    &command,
+                    ProcessedCommandStatus::Cancelled,
+                    Utc::now(),
+                );
                 persist_processed_command_journal(
                     state,
                     &config.journal_lock,
                     &config.processed_commands_path,
+                    &config.robot_id,
+                    command.command_id,
+                    cancelled_record.status,
                     |guard| {
-                        guard.remember_processed_command(updated_record.clone());
-                        Ok(updated_record.clone())
+                        guard.remember_processed_command(cancelled_record.clone());
+                        Ok(cancelled_record.clone())
                     },
                 )
                 .await?;
+                info!(
+                    robot_id = config.robot_id,
+                    command_id = %command.command_id,
+                    "command arguments changed; marking command cancelled"
+                );
+                publish_command_result_with_payload(
+                    client,
+                    config,
+                    command.command_id,
+                    "failed",
+                    "command_cancelled",
+                    json!({
+                        "command_type": command.command_type,
+                        "payload": command.payload,
+                        "reason": "command_arguments_changed",
+                    }),
+                )
+                .await?;
+                return Ok(());
             }
 
-            info!(
-                robot_id = config.robot_id,
-                command_id = %command.command_id,
-                status = persisted_status.as_str(),
-                "duplicate command acknowledged without re-execution"
-            );
-            publish_command_result(
-                client,
-                config,
-                &command,
-                duplicate_publish_status(persisted_status),
-                duplicate_command_event_type(persisted_status),
+            let is_active_move = existing_record.status == ProcessedCommandStatus::Running
+                && normalize_command_type(&existing_record.command_type) == "move"
+                && {
+                    let guard = state.lock().await;
+                    guard.move_command_is_active(command_id)
+                };
+            let can_recover =
+                !existing_record.status.is_terminal() && !is_processing && !is_active_move;
+            if !can_recover {
+                let persisted_status = existing_record.status.duplicate_response();
+                if persisted_status != existing_record.status {
+                    let updated_record = existing_record.with_status(persisted_status, Utc::now());
+                    persist_processed_command_journal(
+                        state,
+                        &config.journal_lock,
+                        &config.processed_commands_path,
+                        &config.robot_id,
+                        command.command_id,
+                        updated_record.status,
+                        |guard| {
+                            guard.remember_processed_command(updated_record.clone());
+                            Ok(updated_record.clone())
+                        },
+                    )
+                    .await?;
+                }
+
+                info!(
+                    robot_id = config.robot_id,
+                    command_id = %command.command_id,
+                    status = persisted_status.as_str(),
+                    "duplicate command acknowledged without re-execution"
+                );
+                publish_command_result(
+                    client,
+                    config,
+                    &command,
+                    duplicate_publish_status(persisted_status),
+                    duplicate_command_event_type(persisted_status),
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+
+        let is_new_command = existing_record.is_none();
+        if is_new_command {
+            let received_record =
+                ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, Utc::now());
+            persist_processed_command_journal(
+                state,
+                &config.journal_lock,
+                &config.processed_commands_path,
+                &config.robot_id,
+                command.command_id,
+                received_record.status,
+                |guard| {
+                    guard.remember_processed_command(received_record.clone());
+                    guard.start_processing_command(command_id);
+                    Ok(received_record.clone())
+                },
             )
             .await?;
-            return Ok(());
+            metrics.commands_processed.inc();
         }
-    }
 
-    let is_new_command = existing_record.is_none();
-    if is_new_command {
-        let received_record =
-            ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, Utc::now());
-        persist_processed_command_journal(
-            state,
-            &config.journal_lock,
-            &config.processed_commands_path,
-            |guard| {
-                guard.remember_processed_command(received_record.clone());
-                guard.start_processing_command(command_id);
-                Ok(received_record.clone())
-            },
+        publish_command_result(
+            client,
+            config,
+            &command,
+            "acknowledged",
+            "command_acknowledged",
         )
         .await?;
-        metrics.commands_processed.inc();
-    }
 
-    publish_command_result(
-        client,
-        config,
-        &command,
-        "acknowledged",
-        "command_acknowledged",
-    )
-    .await?;
-
-    update_command_record_status(
-        state,
-        &config.journal_lock,
-        &config.processed_commands_path,
-        command_id,
-        ProcessedCommandStatus::Running,
-        Utc::now(),
-    )
-    .await?;
-
-    if command
-        .expires_at
-        .is_some_and(|expires_at| expires_at <= Utc::now())
-    {
         update_command_record_status(
             state,
             &config.journal_lock,
             &config.processed_commands_path,
+            &config.robot_id,
             command_id,
-            ProcessedCommandStatus::Expired,
+            ProcessedCommandStatus::Running,
             Utc::now(),
         )
         .await?;
-        publish_command_result(client, config, &command, "expired", "command_expired").await?;
+
+        if command
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= Utc::now())
         {
-            let mut guard = state.lock().await;
-            guard.finish_processing_command(command_id);
-        }
-        return Ok(());
-    }
-
-    let applied = {
-        let mut guard = state.lock().await;
-        guard.apply_command(command.command_id, &command.command_type, &command.payload)
-    };
-
-    let applied = match applied {
-        Ok(applied) => applied,
-        Err(err) => {
             update_command_record_status(
                 state,
                 &config.journal_lock,
                 &config.processed_commands_path,
+                &config.robot_id,
                 command_id,
-                ProcessedCommandStatus::Failed,
+                ProcessedCommandStatus::Expired,
                 Utc::now(),
             )
             .await?;
-            {
-                let mut guard = state.lock().await;
-                guard.finish_processing_command(command_id);
-            }
-            publish_command_result_with_payload(
-                client,
-                config,
-                command.command_id,
-                "failed",
-                "command_failed",
-                json!({
-                    "command_type": command.command_type,
-                    "payload": command.payload,
-                    "error": err.to_string(),
-                }),
-            )
-            .await?;
+            publish_command_result(client, config, &command, "expired", "command_expired").await?;
             return Ok(());
         }
-    };
 
-    match applied {
-        AppliedCommand::Move {
-            overridden_command_id,
-        } => {
-            if let Some(overridden_command_id) = overridden_command_id {
-                update_command_status_by_id(
+        let applied = {
+            let mut guard = state.lock().await;
+            guard.apply_command(command.command_id, &command.command_type, &command.payload)
+        };
+
+        let applied = match applied {
+            Ok(applied) => applied,
+            Err(err) => {
+                update_command_record_status(
                     state,
                     &config.journal_lock,
                     &config.processed_commands_path,
-                    overridden_command_id,
-                    ProcessedCommandStatus::Stopped,
+                    &config.robot_id,
+                    command_id,
+                    ProcessedCommandStatus::Failed,
                     Utc::now(),
                 )
                 .await?;
                 publish_command_result_with_payload(
                     client,
                     config,
-                    overridden_command_id,
-                    "stopped",
-                    "command_stopped",
+                    command.command_id,
+                    "failed",
+                    "command_failed",
                     json!({
-                        "command_type": "move",
-                        "reason": "overridden",
-                        "overridden_by": command.command_id,
+                        "command_type": command.command_type,
+                        "payload": command.payload,
+                        "error": err.to_string(),
                     }),
                 )
                 .await?;
+                return Ok(());
             }
+        };
 
-            update_command_record_status(
-                state,
-                &config.journal_lock,
-                &config.processed_commands_path,
-                command.command_id,
-                ProcessedCommandStatus::Running,
-                Utc::now(),
-            )
-            .await?;
-            publish_command_result(client, config, &command, "running", "command_running").await?;
-            publish_state(client, config, state).await?;
-            spawn_move_completion_watcher(client.clone(), config.clone(), state.clone(), command);
-            {
-                let mut guard = state.lock().await;
-                guard.finish_processing_command(command_id);
-            }
-        }
-        AppliedCommand::SetVelocity => {
-            update_command_record_status(
-                state,
-                &config.journal_lock,
-                &config.processed_commands_path,
-                command.command_id,
-                ProcessedCommandStatus::Running,
-                Utc::now(),
-            )
-            .await?;
-            publish_command_result(client, config, &command, "running", "command_running").await?;
-            publish_state(client, config, state).await?;
-            update_command_record_status(
-                state,
-                &config.journal_lock,
-                &config.processed_commands_path,
-                command.command_id,
-                ProcessedCommandStatus::Completed,
-                Utc::now(),
-            )
-            .await?;
-            publish_command_result(client, config, &command, "completed", "command_completed")
-                .await?;
-            {
-                let mut guard = state.lock().await;
-                guard.finish_processing_command(command_id);
-            }
-        }
-        AppliedCommand::Stop {
-            stop,
-            affected_move_command_id,
-        } => {
-            if let Some(affected_move_command_id) = affected_move_command_id {
-                update_command_status_by_id(
+        match applied {
+            AppliedCommand::Move {
+                overridden_command_id,
+            } => {
+                if let Some(overridden_command_id) = overridden_command_id {
+                    update_command_status_by_id(
+                        state,
+                        &config.journal_lock,
+                        &config.processed_commands_path,
+                        &config.robot_id,
+                        overridden_command_id,
+                        ProcessedCommandStatus::Stopped,
+                        Utc::now(),
+                    )
+                    .await?;
+                    publish_command_result_with_payload(
+                        client,
+                        config,
+                        overridden_command_id,
+                        "stopped",
+                        "command_stopped",
+                        json!({
+                            "command_type": "move",
+                            "reason": "overridden",
+                            "overridden_by": command.command_id,
+                        }),
+                    )
+                    .await?;
+                }
+
+                update_command_record_status(
                     state,
                     &config.journal_lock,
                     &config.processed_commands_path,
-                    affected_move_command_id,
-                    if stop {
-                        ProcessedCommandStatus::Stopped
+                    &config.robot_id,
+                    command.command_id,
+                    ProcessedCommandStatus::Running,
+                    Utc::now(),
+                )
+                .await?;
+                publish_command_result(client, config, &command, "running", "command_running")
+                    .await?;
+                publish_state(client, config, state).await?;
+                spawn_move_completion_watcher(
+                    client.clone(),
+                    config.clone(),
+                    state.clone(),
+                    command,
+                );
+            }
+            AppliedCommand::SetVelocity => {
+                update_command_record_status(
+                    state,
+                    &config.journal_lock,
+                    &config.processed_commands_path,
+                    &config.robot_id,
+                    command.command_id,
+                    ProcessedCommandStatus::Running,
+                    Utc::now(),
+                )
+                .await?;
+                publish_command_result(client, config, &command, "running", "command_running")
+                    .await?;
+                publish_state(client, config, state).await?;
+                update_command_record_status(
+                    state,
+                    &config.journal_lock,
+                    &config.processed_commands_path,
+                    &config.robot_id,
+                    command.command_id,
+                    ProcessedCommandStatus::Completed,
+                    Utc::now(),
+                )
+                .await?;
+                publish_command_result(client, config, &command, "completed", "command_completed")
+                    .await?;
+            }
+            AppliedCommand::Stop {
+                stop,
+                affected_move_command_id,
+            } => {
+                if let Some(affected_move_command_id) = affected_move_command_id {
+                    update_command_status_by_id(
+                        state,
+                        &config.journal_lock,
+                        &config.processed_commands_path,
+                        &config.robot_id,
+                        affected_move_command_id,
+                        if stop {
+                            ProcessedCommandStatus::Stopped
+                        } else {
+                            ProcessedCommandStatus::Resumed
+                        },
+                        Utc::now(),
+                    )
+                    .await?;
+                    let (status, event_type) = if stop {
+                        ("stopped", "command_stopped")
                     } else {
-                        ProcessedCommandStatus::Resumed
-                    },
+                        ("running", "command_resumed")
+                    };
+                    publish_command_result_with_payload(
+                        client,
+                        config,
+                        affected_move_command_id,
+                        status,
+                        event_type,
+                        json!({
+                            "command_type": "move",
+                            "reason": if stop { "stop_command" } else { "resume_command" },
+                            "stop_command_id": command.command_id,
+                        }),
+                    )
+                    .await?;
+                }
+
+                update_command_record_status(
+                    state,
+                    &config.journal_lock,
+                    &config.processed_commands_path,
+                    &config.robot_id,
+                    command.command_id,
+                    ProcessedCommandStatus::Running,
                     Utc::now(),
                 )
                 .await?;
-                let (status, event_type) = if stop {
-                    ("stopped", "command_stopped")
-                } else {
-                    ("running", "command_resumed")
-                };
-                publish_command_result_with_payload(
-                    client,
-                    config,
-                    affected_move_command_id,
-                    status,
-                    event_type,
-                    json!({
-                        "command_type": "move",
-                        "reason": if stop { "stop_command" } else { "resume_command" },
-                        "stop_command_id": command.command_id,
-                    }),
+                publish_command_result(client, config, &command, "running", "command_running")
+                    .await?;
+                publish_state(client, config, state).await?;
+                update_command_record_status(
+                    state,
+                    &config.journal_lock,
+                    &config.processed_commands_path,
+                    &config.robot_id,
+                    command.command_id,
+                    ProcessedCommandStatus::Completed,
+                    Utc::now(),
                 )
                 .await?;
+                publish_command_result(client, config, &command, "completed", "command_completed")
+                    .await?;
             }
-
-            update_command_record_status(
-                state,
-                &config.journal_lock,
-                &config.processed_commands_path,
-                command.command_id,
-                ProcessedCommandStatus::Running,
-                Utc::now(),
-            )
-            .await?;
-            publish_command_result(client, config, &command, "running", "command_running").await?;
-            publish_state(client, config, state).await?;
-            update_command_record_status(
-                state,
-                &config.journal_lock,
-                &config.processed_commands_path,
-                command.command_id,
-                ProcessedCommandStatus::Completed,
-                Utc::now(),
-            )
-            .await?;
-            publish_command_result(client, config, &command, "completed", "command_completed")
-                .await?;
-            {
-                let mut guard = state.lock().await;
-                guard.finish_processing_command(command.command_id);
+            AppliedCommand::SimulateEvent { .. } => {
+                return Err(anyhow!(
+                    "simulated event commands are handled separately from command lifecycle"
+                ));
             }
         }
-        AppliedCommand::SimulateEvent { .. } => {
-            {
-                let mut guard = state.lock().await;
-                guard.finish_processing_command(command.command_id);
-            }
-            return Err(anyhow!(
-                "simulated event commands are handled separately from command lifecycle"
-            ));
-        }
+        Ok(())
     }
-    Ok(())
+    .await;
+
+    {
+        let mut guard = state.lock().await;
+        guard.finish_processing_command(command_id);
+    }
+
+    result
 }
 
 async fn handle_simulated_event_request(
@@ -675,6 +688,7 @@ async fn handle_simulated_event_request(
             state,
             &config.journal_lock,
             &config.processed_commands_path,
+            &config.robot_id,
             interrupted_move_command_id,
             ProcessedCommandStatus::Stopped,
             Utc::now(),
@@ -747,6 +761,9 @@ async fn recover_unfinished_commands(
             state,
             &config.journal_lock,
             &config.processed_commands_path,
+            &config.robot_id,
+            record.command_id,
+            ProcessedCommandStatus::Failed,
             |guard| {
                 guard.remember_processed_command(failed_record.clone());
                 Ok(failed_record.clone())
@@ -861,6 +878,7 @@ fn spawn_move_completion_watcher(
                     &state,
                     &config.journal_lock,
                     &config.processed_commands_path,
+                    &config.robot_id,
                     command.command_id,
                     ProcessedCommandStatus::Completed,
                     Utc::now(),
@@ -958,19 +976,31 @@ async fn update_command_record_status(
     state: &Arc<Mutex<RobotState>>,
     journal_lock: &Arc<Mutex<()>>,
     path: &Path,
+    robot_id: &str,
     command_id: uuid::Uuid,
     status: ProcessedCommandStatus,
     updated_at: chrono::DateTime<Utc>,
 ) -> anyhow::Result<ProcessedCommandRecord> {
-    persist_processed_command_journal(state, journal_lock, path, |guard| {
-        let current = guard
-            .processed_command(&command_id)
-            .cloned()
-            .ok_or_else(|| anyhow!("missing processed command record for {command_id}"))?;
-        let updated_record = current.with_status(status, updated_at);
-        guard.remember_processed_command(updated_record.clone());
-        Ok(updated_record)
-    })
+    persist_processed_command_journal(
+        state,
+        journal_lock,
+        path,
+        robot_id,
+        command_id,
+        status,
+        |guard| {
+            let current = guard
+                .processed_command(&command_id)
+                .cloned()
+                .ok_or_else(|| anyhow!("missing processed command record for {command_id}"))?;
+            if current.updated_at > updated_at {
+                return Ok(current);
+            }
+            let updated_record = current.with_status(status, updated_at);
+            guard.remember_processed_command(updated_record.clone());
+            Ok(updated_record)
+        },
+    )
     .await
 }
 
@@ -978,17 +1008,30 @@ async fn update_command_status_by_id(
     state: &Arc<Mutex<RobotState>>,
     journal_lock: &Arc<Mutex<()>>,
     path: &Path,
+    robot_id: &str,
     command_id: uuid::Uuid,
     status: ProcessedCommandStatus,
     updated_at: chrono::DateTime<Utc>,
 ) -> anyhow::Result<ProcessedCommandRecord> {
-    update_command_record_status(state, journal_lock, path, command_id, status, updated_at).await
+    update_command_record_status(
+        state,
+        journal_lock,
+        path,
+        robot_id,
+        command_id,
+        status,
+        updated_at,
+    )
+    .await
 }
 
 async fn persist_processed_command_journal<R, F>(
     state: &Arc<Mutex<RobotState>>,
     journal_lock: &Arc<Mutex<()>>,
     path: &Path,
+    robot_id: &str,
+    command_id: uuid::Uuid,
+    target_status: ProcessedCommandStatus,
     mutate: F,
 ) -> anyhow::Result<R>
 where
@@ -1009,6 +1052,14 @@ where
     if let Err(err) = persist_processed_commands(path, &records).await {
         let mut guard = state.lock().await;
         guard.restore_processed_command_journal(snapshot);
+        error!(
+            robot_id,
+            command_id = %command_id,
+            target_status = target_status.as_str(),
+            path = %path.display(),
+            error = %err,
+            "failed to persist processed command journal"
+        );
         return Err(err);
     }
 
@@ -1048,16 +1099,19 @@ mod tests {
 
     use chrono::Utc;
     use serde_json::json;
-    use tokio::sync::Mutex;
+    use tokio::sync::{Barrier, Mutex};
     use uuid::Uuid;
 
     use super::{
-        command_subscription_topics, is_simulated_event_topic, normalize_command_type,
-        sensor_event_message, sensor_event_topic, startup_recovery_payload,
+        command_subscription_topics, handle_command, is_simulated_event_topic,
+        normalize_command_type, sensor_event_message, sensor_event_topic, startup_recovery_payload,
         update_command_record_status, STARTUP_RECOVERY_REASON,
     };
-    use crate::persistence::{ProcessedCommandRecord, ProcessedCommandStatus};
-    use crate::state::RobotState;
+    use crate::{
+        metrics::Metrics,
+        persistence::{load_processed_commands, ProcessedCommandRecord, ProcessedCommandStatus},
+        state::RobotState,
+    };
 
     fn sample_record() -> ProcessedCommandRecord {
         ProcessedCommandRecord::new(
@@ -1149,80 +1203,336 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn concurrent_journal_writes_are_serialized() {
+    async fn concurrent_independent_commands_persist_all_final_statuses() {
         let journal_lock = Arc::new(Mutex::new(()));
         let path = std::env::temp_dir().join(format!(
-            "robot-simulator-journal-race-{}.json",
+            "robot-simulator-journal-independent-{}.json",
             Uuid::new_v4()
         ));
-
-        let command_a = robot_fleet_common::types::RobotCommandMessage {
-            command_id: Uuid::new_v4(),
-            robot_id: "robot-01".into(),
-            command_type: "move".into(),
-            payload: json!({ "target_position_x": 1.0, "target_position_y": 2.0 }),
-            expires_at: None,
-        };
-        let command_b = robot_fleet_common::types::RobotCommandMessage {
-            command_id: Uuid::new_v4(),
-            robot_id: "robot-01".into(),
-            command_type: "stop".into(),
-            payload: json!({ "stop": true }),
-            expires_at: None,
-        };
-
+        let robot_id = "robot-01";
+        let command_specs = vec![
+            (
+                Uuid::new_v4(),
+                "move",
+                json!({ "target_position_x": 1.0, "target_position_y": 2.0 }),
+                ProcessedCommandStatus::Running,
+            ),
+            (
+                Uuid::new_v4(),
+                "set_velocity",
+                json!({ "set_velocity": 1.5 }),
+                ProcessedCommandStatus::Completed,
+            ),
+            (
+                Uuid::new_v4(),
+                "stop",
+                json!({ "stop": true }),
+                ProcessedCommandStatus::Stopped,
+            ),
+        ];
+        let started_at = Utc::now();
         let mut records = HashMap::new();
-        records.insert(
-            command_a.command_id,
-            ProcessedCommandRecord::new(&command_a, ProcessedCommandStatus::Received, Utc::now()),
-        );
-        records.insert(
-            command_b.command_id,
-            ProcessedCommandRecord::new(&command_b, ProcessedCommandStatus::Received, Utc::now()),
-        );
-
+        for (command_id, command_type, payload, _) in &command_specs {
+            let command = robot_fleet_common::types::RobotCommandMessage {
+                command_id: *command_id,
+                robot_id: robot_id.into(),
+                command_type: (*command_type).into(),
+                payload: payload.clone(),
+                expires_at: None,
+            };
+            records.insert(
+                *command_id,
+                ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, started_at),
+            );
+        }
         let state = Arc::new(Mutex::new(RobotState::new(records, Duration::from_secs(1))));
+        let barrier = Arc::new(Barrier::new(command_specs.len() + 1));
 
-        let first = update_command_record_status(
-            &state,
-            &journal_lock,
-            &path,
-            command_a.command_id,
-            ProcessedCommandStatus::Running,
-            Utc::now(),
-        );
-        let second = update_command_record_status(
-            &state,
-            &journal_lock,
-            &path,
-            command_b.command_id,
-            ProcessedCommandStatus::Completed,
-            Utc::now(),
-        );
-        let (first, second) = tokio::join!(first, second);
-        first.expect("first write");
-        second.expect("second write");
+        let mut tasks = Vec::new();
+        for (index, (command_id, _, _, final_status)) in command_specs.iter().enumerate() {
+            let state = Arc::clone(&state);
+            let journal_lock = Arc::clone(&journal_lock);
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            let command_id = *command_id;
+            let final_status = *final_status;
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                update_command_record_status(
+                    &state,
+                    &journal_lock,
+                    &path,
+                    robot_id,
+                    command_id,
+                    final_status,
+                    started_at + chrono::Duration::seconds((index as i64) + 1),
+                )
+                .await
+            }));
+        }
+
+        barrier.wait().await;
+        for task in tasks {
+            task.await.expect("task join").expect("journal write");
+        }
 
         let contents = tokio::fs::read_to_string(&path)
             .await
             .expect("read journal");
         let persisted: HashMap<Uuid, ProcessedCommandRecord> =
             serde_json::from_str(&contents).expect("parse journal");
-        assert_eq!(
-            persisted
-                .get(&command_a.command_id)
-                .expect("first command")
-                .status,
-            ProcessedCommandStatus::Running
+        assert_eq!(persisted.len(), command_specs.len());
+        for (command_id, _, _, final_status) in command_specs {
+            assert_eq!(
+                persisted.get(&command_id).expect("command record").status,
+                final_status
+            );
+        }
+        tokio::fs::remove_file(path).await.expect("remove journal");
+    }
+
+    #[tokio::test]
+    async fn concurrent_updates_keep_the_latest_command_status() {
+        let journal_lock = Arc::new(Mutex::new(()));
+        let path = std::env::temp_dir().join(format!(
+            "robot-simulator-journal-ordered-{}.json",
+            Uuid::new_v4()
+        ));
+        let robot_id = "robot-01";
+        let command_id = Uuid::new_v4();
+        let command = robot_fleet_common::types::RobotCommandMessage {
+            command_id,
+            robot_id: robot_id.into(),
+            command_type: "move".into(),
+            payload: json!({ "target_position_x": 1.0, "target_position_y": 2.0 }),
+            expires_at: None,
+        };
+        let received_at = Utc::now();
+        let mut records = HashMap::new();
+        records.insert(
+            command_id,
+            ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, received_at),
         );
+        let state = Arc::new(Mutex::new(RobotState::new(records, Duration::from_secs(1))));
+        let barrier = Arc::new(Barrier::new(3));
+
+        let running = {
+            let state = Arc::clone(&state);
+            let journal_lock = Arc::clone(&journal_lock);
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                update_command_record_status(
+                    &state,
+                    &journal_lock,
+                    &path,
+                    robot_id,
+                    command_id,
+                    ProcessedCommandStatus::Running,
+                    received_at + chrono::Duration::seconds(1),
+                )
+                .await
+            })
+        };
+        let completed = {
+            let state = Arc::clone(&state);
+            let journal_lock = Arc::clone(&journal_lock);
+            let path = path.clone();
+            let barrier = Arc::clone(&barrier);
+            tokio::spawn(async move {
+                barrier.wait().await;
+                update_command_record_status(
+                    &state,
+                    &journal_lock,
+                    &path,
+                    robot_id,
+                    command_id,
+                    ProcessedCommandStatus::Completed,
+                    received_at + chrono::Duration::seconds(2),
+                )
+                .await
+            })
+        };
+
+        barrier.wait().await;
+        running.await.expect("running task").expect("running write");
+        completed
+            .await
+            .expect("completed task")
+            .expect("completed write");
+
+        let persisted = load_processed_commands(&path)
+            .await
+            .expect("load ordered journal");
         assert_eq!(
-            persisted
-                .get(&command_b.command_id)
-                .expect("second command")
-                .status,
+            persisted.get(&command_id).expect("command record").status,
             ProcessedCommandStatus::Completed
         );
-
         tokio::fs::remove_file(path).await.expect("remove journal");
+    }
+
+    #[tokio::test]
+    async fn repeated_concurrent_writes_keep_valid_journal() {
+        let journal_lock = Arc::new(Mutex::new(()));
+        let path = std::env::temp_dir().join(format!(
+            "robot-simulator-journal-stress-{}.json",
+            Uuid::new_v4()
+        ));
+        let robot_id = "robot-01";
+        let command_ids: Vec<_> = (0..8).map(|_| Uuid::new_v4()).collect();
+        let mut records = HashMap::new();
+        let base = Utc::now();
+        for command_id in &command_ids {
+            let command = robot_fleet_common::types::RobotCommandMessage {
+                command_id: *command_id,
+                robot_id: robot_id.into(),
+                command_type: "move".into(),
+                payload: json!({ "target_position_x": 1.0, "target_position_y": 2.0 }),
+                expires_at: None,
+            };
+            records.insert(
+                *command_id,
+                ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, base),
+            );
+        }
+        let state = Arc::new(Mutex::new(RobotState::new(records, Duration::from_secs(1))));
+
+        for round in 0..8 {
+            let barrier = Arc::new(Barrier::new(command_ids.len() + 1));
+            let mut tasks = Vec::new();
+            for (index, command_id) in command_ids.iter().enumerate() {
+                let state = Arc::clone(&state);
+                let journal_lock = Arc::clone(&journal_lock);
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                let command_id = *command_id;
+                tasks.push(tokio::spawn(async move {
+                    barrier.wait().await;
+                    let running_at = base + chrono::Duration::seconds((round * 2 + 1) as i64);
+                    let completed_at = base + chrono::Duration::seconds((round * 2 + 2) as i64);
+                    update_command_record_status(
+                        &state,
+                        &journal_lock,
+                        &path,
+                        robot_id,
+                        command_id,
+                        ProcessedCommandStatus::Running,
+                        running_at + chrono::Duration::milliseconds(index as i64),
+                    )
+                    .await?;
+                    update_command_record_status(
+                        &state,
+                        &journal_lock,
+                        &path,
+                        robot_id,
+                        command_id,
+                        ProcessedCommandStatus::Completed,
+                        completed_at + chrono::Duration::milliseconds(index as i64),
+                    )
+                    .await
+                }));
+            }
+
+            barrier.wait().await;
+            for task in tasks {
+                task.await
+                    .expect("stress task join")
+                    .expect("stress journal write");
+            }
+        }
+
+        let contents = tokio::fs::read_to_string(&path)
+            .await
+            .expect("read stress journal");
+        let persisted: HashMap<Uuid, ProcessedCommandRecord> =
+            serde_json::from_str(&contents).expect("parse stress journal");
+        assert_eq!(persisted.len(), command_ids.len());
+        for command_id in command_ids {
+            assert_eq!(
+                persisted.get(&command_id).expect("command record").status,
+                ProcessedCommandStatus::Completed
+            );
+        }
+        tokio::fs::remove_file(path).await.expect("remove journal");
+    }
+
+    #[tokio::test]
+    async fn persistence_errors_cleanup_processing_commands() {
+        let config = crate::Config {
+            robot_id: "robot-01".into(),
+            robot_name: "Robot 01".into(),
+            mqtt_client_id: "robot-01".into(),
+            mqtt_url: "mqtt://localhost:1883".into(),
+            telemetry_interval: Duration::from_secs(1),
+            robot_state_interval: Duration::from_secs(1),
+            metrics_port: 9100,
+            processed_commands_path: std::env::temp_dir().join(format!(
+                "robot-simulator-journal-error-dir-{}",
+                Uuid::new_v4()
+            )),
+            journal_lock: Arc::new(Mutex::new(())),
+        };
+        tokio::fs::create_dir_all(&config.processed_commands_path)
+            .await
+            .expect("create failing journal path");
+        let metrics = Metrics::new().expect("metrics");
+        let (client, mut eventloop) = rumqttc::AsyncClient::new(
+            rumqttc::MqttOptions::new("robot-simulator-test", "localhost", 1883),
+            1,
+        );
+        tokio::spawn(async move {
+            loop {
+                let _ = eventloop.poll().await;
+            }
+        });
+        let command_id = Uuid::new_v4();
+        let command = robot_fleet_common::types::RobotCommandMessage {
+            command_id,
+            robot_id: config.robot_id.clone(),
+            command_type: "set_velocity".into(),
+            payload: json!({ "set_velocity": 1.5 }),
+            expires_at: None,
+        };
+        let state = Arc::new(Mutex::new(RobotState::new(
+            HashMap::new(),
+            Duration::from_secs(1),
+        )));
+        let payload = serde_json::to_vec(&command).expect("serialize command");
+
+        let err = handle_command(&client, &config, &state, &metrics, &payload)
+            .await
+            .expect_err("expected journal failure");
+        assert!(err.to_string().contains("rename") || err.to_string().contains("directory"));
+
+        {
+            let guard = state.lock().await;
+            assert!(!guard.command_is_processing(command_id));
+            assert!(guard.processed_command(&command_id).is_none());
+        }
+
+        let ok_path = std::env::temp_dir().join(format!(
+            "robot-simulator-journal-retry-{}.json",
+            Uuid::new_v4()
+        ));
+        let mut retry_config = config.clone();
+        retry_config.processed_commands_path = ok_path.clone();
+        handle_command(&client, &retry_config, &state, &metrics, &payload)
+            .await
+            .expect("retry command handling");
+
+        let persisted = load_processed_commands(&ok_path)
+            .await
+            .expect("load recovered journal");
+        assert_eq!(
+            persisted.get(&command_id).expect("command record").status,
+            ProcessedCommandStatus::Completed
+        );
+        tokio::fs::remove_file(ok_path)
+            .await
+            .expect("remove journal");
+        tokio::fs::remove_dir_all(&config.processed_commands_path)
+            .await
+            .expect("remove failing journal path");
     }
 }

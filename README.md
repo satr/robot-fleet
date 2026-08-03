@@ -207,7 +207,7 @@ Stateful container data is stored in `data/` on the host:
 - `data/robots/robot-02/`
 - `data/robots/robot-03/`
 
-Each robot directory contains `processed_commands.json`, a single pretty-printed JSON object keyed by command UUID with the latest lifecycle metadata for each operational command. Simulated events are deliberately untracked.
+Each robot directory contains `processed_commands.json`, a single pretty-printed JSON object keyed by command UUID with the latest lifecycle metadata for each operational command. Writes are serialized within each simulator process. Simulated events are deliberately untracked.
 
 ## Service URLs
 
