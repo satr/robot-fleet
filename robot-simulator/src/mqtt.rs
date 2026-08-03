@@ -321,12 +321,16 @@ async fn handle_command(
                 ProcessedCommandStatus::Cancelled,
                 Utc::now(),
             );
-            let records = {
-                let mut guard = state.lock().await;
-                guard.remember_processed_command(cancelled_record);
-                guard.processed_commands.clone()
-            };
-            persist_processed_commands(&config.processed_commands_path, &records).await?;
+            persist_processed_command_journal(
+                state,
+                &config.journal_lock,
+                &config.processed_commands_path,
+                |guard| {
+                    guard.remember_processed_command(cancelled_record.clone());
+                    Ok(cancelled_record.clone())
+                },
+            )
+            .await?;
             info!(
                 robot_id = config.robot_id,
                 command_id = %command.command_id,
@@ -360,12 +364,16 @@ async fn handle_command(
             let persisted_status = existing_record.status.duplicate_response();
             if persisted_status != existing_record.status {
                 let updated_record = existing_record.with_status(persisted_status, Utc::now());
-                let records = {
-                    let mut guard = state.lock().await;
-                    guard.remember_processed_command(updated_record);
-                    guard.processed_commands.clone()
-                };
-                persist_processed_commands(&config.processed_commands_path, &records).await?;
+                persist_processed_command_journal(
+                    state,
+                    &config.journal_lock,
+                    &config.processed_commands_path,
+                    |guard| {
+                        guard.remember_processed_command(updated_record.clone());
+                        Ok(updated_record.clone())
+                    },
+                )
+                .await?;
             }
 
             info!(
@@ -388,20 +396,20 @@ async fn handle_command(
 
     let is_new_command = existing_record.is_none();
     if is_new_command {
-        metrics.commands_processed.inc();
         let received_record =
             ProcessedCommandRecord::new(&command, ProcessedCommandStatus::Received, Utc::now());
-        let records = {
-            let mut guard = state.lock().await;
-            guard.remember_processed_command(received_record);
-            guard.processed_commands.clone()
-        };
-        persist_processed_commands(&config.processed_commands_path, &records).await?;
-    }
-
-    {
-        let mut guard = state.lock().await;
-        guard.start_processing_command(command_id);
+        persist_processed_command_journal(
+            state,
+            &config.journal_lock,
+            &config.processed_commands_path,
+            |guard| {
+                guard.remember_processed_command(received_record.clone());
+                guard.start_processing_command(command_id);
+                Ok(received_record.clone())
+            },
+        )
+        .await?;
+        metrics.commands_processed.inc();
     }
 
     publish_command_result(
@@ -415,6 +423,7 @@ async fn handle_command(
 
     update_command_record_status(
         state,
+        &config.journal_lock,
         &config.processed_commands_path,
         command_id,
         ProcessedCommandStatus::Running,
@@ -428,6 +437,7 @@ async fn handle_command(
     {
         update_command_record_status(
             state,
+            &config.journal_lock,
             &config.processed_commands_path,
             command_id,
             ProcessedCommandStatus::Expired,
@@ -452,6 +462,7 @@ async fn handle_command(
         Err(err) => {
             update_command_record_status(
                 state,
+                &config.journal_lock,
                 &config.processed_commands_path,
                 command_id,
                 ProcessedCommandStatus::Failed,
@@ -486,6 +497,7 @@ async fn handle_command(
             if let Some(overridden_command_id) = overridden_command_id {
                 update_command_status_by_id(
                     state,
+                    &config.journal_lock,
                     &config.processed_commands_path,
                     overridden_command_id,
                     ProcessedCommandStatus::Stopped,
@@ -509,6 +521,7 @@ async fn handle_command(
 
             update_command_record_status(
                 state,
+                &config.journal_lock,
                 &config.processed_commands_path,
                 command.command_id,
                 ProcessedCommandStatus::Running,
@@ -526,6 +539,7 @@ async fn handle_command(
         AppliedCommand::SetVelocity => {
             update_command_record_status(
                 state,
+                &config.journal_lock,
                 &config.processed_commands_path,
                 command.command_id,
                 ProcessedCommandStatus::Running,
@@ -536,6 +550,7 @@ async fn handle_command(
             publish_state(client, config, state).await?;
             update_command_record_status(
                 state,
+                &config.journal_lock,
                 &config.processed_commands_path,
                 command.command_id,
                 ProcessedCommandStatus::Completed,
@@ -556,6 +571,7 @@ async fn handle_command(
             if let Some(affected_move_command_id) = affected_move_command_id {
                 update_command_status_by_id(
                     state,
+                    &config.journal_lock,
                     &config.processed_commands_path,
                     affected_move_command_id,
                     if stop {
@@ -588,6 +604,7 @@ async fn handle_command(
 
             update_command_record_status(
                 state,
+                &config.journal_lock,
                 &config.processed_commands_path,
                 command.command_id,
                 ProcessedCommandStatus::Running,
@@ -598,6 +615,7 @@ async fn handle_command(
             publish_state(client, config, state).await?;
             update_command_record_status(
                 state,
+                &config.journal_lock,
                 &config.processed_commands_path,
                 command.command_id,
                 ProcessedCommandStatus::Completed,
@@ -655,6 +673,7 @@ async fn handle_simulated_event_request(
     if let Some(interrupted_move_command_id) = interrupted_move_command_id {
         update_command_status_by_id(
             state,
+            &config.journal_lock,
             &config.processed_commands_path,
             interrupted_move_command_id,
             ProcessedCommandStatus::Stopped,
@@ -724,16 +743,16 @@ async fn recover_unfinished_commands(
         .await?;
 
         let failed_record = record.with_status(ProcessedCommandStatus::Failed, Utc::now());
-        let records = {
-            let guard = state.lock().await;
-            let mut records = guard.processed_commands.clone();
-            records.insert(failed_record.command_id, failed_record.clone());
-            records
-        };
-        persist_processed_commands(&config.processed_commands_path, &records).await?;
-
-        let mut guard = state.lock().await;
-        guard.remember_processed_command(failed_record);
+        persist_processed_command_journal(
+            state,
+            &config.journal_lock,
+            &config.processed_commands_path,
+            |guard| {
+                guard.remember_processed_command(failed_record.clone());
+                Ok(failed_record.clone())
+            },
+        )
+        .await?;
     }
 
     Ok(())
@@ -831,6 +850,7 @@ fn spawn_move_completion_watcher(
             if completed {
                 if let Err(err) = update_command_record_status(
                     &state,
+                    &config.journal_lock,
                     &config.processed_commands_path,
                     command.command_id,
                     ProcessedCommandStatus::Completed,
@@ -927,37 +947,63 @@ fn startup_recovery_payload(record: &ProcessedCommandRecord) -> serde_json::Valu
 
 async fn update_command_record_status(
     state: &Arc<Mutex<RobotState>>,
+    journal_lock: &Arc<Mutex<()>>,
     path: &Path,
     command_id: uuid::Uuid,
     status: ProcessedCommandStatus,
     updated_at: chrono::DateTime<Utc>,
 ) -> anyhow::Result<ProcessedCommandRecord> {
-    let record = {
-        let mut guard = state.lock().await;
+    persist_processed_command_journal(state, journal_lock, path, |guard| {
         let current = guard
             .processed_command(&command_id)
             .cloned()
             .ok_or_else(|| anyhow!("missing processed command record for {command_id}"))?;
         let updated_record = current.with_status(status, updated_at);
         guard.remember_processed_command(updated_record.clone());
-        updated_record
-    };
-    let records = {
-        let guard = state.lock().await;
-        guard.processed_commands.clone()
-    };
-    persist_processed_commands(path, &records).await?;
-    Ok(record)
+        Ok(updated_record)
+    })
+    .await
 }
 
 async fn update_command_status_by_id(
     state: &Arc<Mutex<RobotState>>,
+    journal_lock: &Arc<Mutex<()>>,
     path: &Path,
     command_id: uuid::Uuid,
     status: ProcessedCommandStatus,
     updated_at: chrono::DateTime<Utc>,
 ) -> anyhow::Result<ProcessedCommandRecord> {
-    update_command_record_status(state, path, command_id, status, updated_at).await
+    update_command_record_status(state, journal_lock, path, command_id, status, updated_at).await
+}
+
+async fn persist_processed_command_journal<R, F>(
+    state: &Arc<Mutex<RobotState>>,
+    journal_lock: &Arc<Mutex<()>>,
+    path: &Path,
+    mutate: F,
+) -> anyhow::Result<R>
+where
+    F: FnOnce(&mut RobotState) -> anyhow::Result<R>,
+{
+    let _journal_guard = journal_lock.lock().await;
+    let snapshot = {
+        let guard = state.lock().await;
+        guard.snapshot_processed_command_journal()
+    };
+    let (result, records) = {
+        let mut guard = state.lock().await;
+        let result = mutate(&mut guard)?;
+        let records = guard.processed_commands.clone();
+        (result, records)
+    };
+
+    if let Err(err) = persist_processed_commands(path, &records).await {
+        let mut guard = state.lock().await;
+        guard.restore_processed_command_journal(snapshot);
+        return Err(err);
+    }
+
+    Ok(result)
 }
 
 fn duplicate_command_event_type(status: ProcessedCommandStatus) -> &'static str {
@@ -989,15 +1035,20 @@ fn duplicate_publish_status(status: ProcessedCommandStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::HashMap, sync::Arc, time::Duration};
+
     use chrono::Utc;
     use serde_json::json;
+    use tokio::sync::Mutex;
     use uuid::Uuid;
 
     use super::{
         command_subscription_topics, is_simulated_event_topic, normalize_command_type,
-        sensor_event_topic, startup_recovery_payload, STARTUP_RECOVERY_REASON,
+        sensor_event_topic, startup_recovery_payload, update_command_record_status,
+        STARTUP_RECOVERY_REASON,
     };
     use crate::persistence::{ProcessedCommandRecord, ProcessedCommandStatus};
+    use crate::state::RobotState;
 
     fn sample_record() -> ProcessedCommandRecord {
         ProcessedCommandRecord::new(
@@ -1069,5 +1120,83 @@ mod tests {
             json!({ "target_position_x": 1.0, "target_position_y": 2.0 })
         );
         assert_eq!(payload["reason"], json!(STARTUP_RECOVERY_REASON));
+    }
+
+    #[tokio::test]
+    async fn concurrent_journal_writes_are_serialized() {
+        let journal_lock = Arc::new(Mutex::new(()));
+        let path = std::env::temp_dir().join(format!(
+            "robot-simulator-journal-race-{}.json",
+            Uuid::new_v4()
+        ));
+
+        let command_a = robot_fleet_common::types::RobotCommandMessage {
+            command_id: Uuid::new_v4(),
+            robot_id: "robot-01".into(),
+            command_type: "move".into(),
+            payload: json!({ "target_position_x": 1.0, "target_position_y": 2.0 }),
+            expires_at: None,
+        };
+        let command_b = robot_fleet_common::types::RobotCommandMessage {
+            command_id: Uuid::new_v4(),
+            robot_id: "robot-01".into(),
+            command_type: "stop".into(),
+            payload: json!({ "stop": true }),
+            expires_at: None,
+        };
+
+        let mut records = HashMap::new();
+        records.insert(
+            command_a.command_id,
+            ProcessedCommandRecord::new(&command_a, ProcessedCommandStatus::Received, Utc::now()),
+        );
+        records.insert(
+            command_b.command_id,
+            ProcessedCommandRecord::new(&command_b, ProcessedCommandStatus::Received, Utc::now()),
+        );
+
+        let state = Arc::new(Mutex::new(RobotState::new(records, Duration::from_secs(1))));
+
+        let first = update_command_record_status(
+            &state,
+            &journal_lock,
+            &path,
+            command_a.command_id,
+            ProcessedCommandStatus::Running,
+            Utc::now(),
+        );
+        let second = update_command_record_status(
+            &state,
+            &journal_lock,
+            &path,
+            command_b.command_id,
+            ProcessedCommandStatus::Completed,
+            Utc::now(),
+        );
+        let (first, second) = tokio::join!(first, second);
+        first.expect("first write");
+        second.expect("second write");
+
+        let contents = tokio::fs::read_to_string(&path)
+            .await
+            .expect("read journal");
+        let persisted: HashMap<Uuid, ProcessedCommandRecord> =
+            serde_json::from_str(&contents).expect("parse journal");
+        assert_eq!(
+            persisted
+                .get(&command_a.command_id)
+                .expect("first command")
+                .status,
+            ProcessedCommandStatus::Running
+        );
+        assert_eq!(
+            persisted
+                .get(&command_b.command_id)
+                .expect("second command")
+                .status,
+            ProcessedCommandStatus::Completed
+        );
+
+        tokio::fs::remove_file(path).await.expect("remove journal");
     }
 }

@@ -37,6 +37,12 @@ pub(crate) struct RobotState {
     motion_tick_seconds: f64,
 }
 
+#[derive(Clone)]
+pub(crate) struct ProcessedCommandJournalSnapshot {
+    processed_commands: HashMap<Uuid, ProcessedCommandRecord>,
+    processing_commands: HashSet<Uuid>,
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum AppliedCommand {
     Move {
@@ -89,6 +95,21 @@ impl RobotState {
 
     pub(crate) fn remember_processed_command(&mut self, record: ProcessedCommandRecord) {
         self.processed_commands.insert(record.command_id, record);
+    }
+
+    pub(crate) fn snapshot_processed_command_journal(&self) -> ProcessedCommandJournalSnapshot {
+        ProcessedCommandJournalSnapshot {
+            processed_commands: self.processed_commands.clone(),
+            processing_commands: self.processing_commands.clone(),
+        }
+    }
+
+    pub(crate) fn restore_processed_command_journal(
+        &mut self,
+        snapshot: ProcessedCommandJournalSnapshot,
+    ) {
+        self.processed_commands = snapshot.processed_commands;
+        self.processing_commands = snapshot.processing_commands;
     }
 
     pub(crate) fn start_processing_command(&mut self, command_id: Uuid) -> bool {

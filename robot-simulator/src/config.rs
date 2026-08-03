@@ -1,7 +1,8 @@
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use robot_fleet_common::config::env_or;
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub(crate) struct Config {
@@ -13,6 +14,7 @@ pub(crate) struct Config {
     pub(crate) robot_state_interval: Duration,
     pub(crate) metrics_port: u16,
     pub(crate) processed_commands_path: PathBuf,
+    pub(crate) journal_lock: Arc<Mutex<()>>,
 }
 
 impl Config {
@@ -45,6 +47,7 @@ impl Config {
                 "/state/processed_commands.json",
             )
             .into(),
+            journal_lock: Arc::new(Mutex::new(())),
         })
     }
 }
