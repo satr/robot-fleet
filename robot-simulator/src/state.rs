@@ -145,8 +145,6 @@ impl RobotState {
                     affected_move_command_id: self.current_move_command_id,
                 })
             }
-            "extreme_temperature" => Ok(self.start_simulated_event("extreme_temperature", "high")),
-            "robot_stack" => Ok(self.start_simulated_event("robot_stack", "normal")),
             other => Err(anyhow!("unsupported command_type: {other}")),
         }
     }
@@ -259,7 +257,11 @@ impl RobotState {
         self.refresh_operating_state();
     }
 
-    fn start_simulated_event(&mut self, event_type: &str, priority: &str) -> AppliedCommand {
+    pub(crate) fn start_simulated_event(
+        &mut self,
+        event_type: &str,
+        priority: &str,
+    ) -> AppliedCommand {
         let interrupted_move_command_id = self.current_move_command_id.take();
         self.target_position_x = None;
         self.target_position_y = None;
@@ -571,7 +573,7 @@ mod tests {
     }
 
     #[test]
-    fn simulated_event_interrupts_motion_and_finishes_safe_state() {
+    fn start_simulated_event_interrupts_motion_and_finishes_safe_state() {
         let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
         let move_command_id = Uuid::new_v4();
         state
@@ -582,9 +584,7 @@ mod tests {
             )
             .expect("move command");
 
-        let applied = state
-            .apply_command(Uuid::new_v4(), "extreme_temperature", &json!({}))
-            .expect("simulated event command");
+        let applied = state.start_simulated_event("extreme_temperature", "high");
 
         assert_eq!(
             applied,
@@ -606,20 +606,13 @@ mod tests {
     }
 
     #[test]
-    fn simulated_event_commands_accept_human_readable_names() {
+    fn apply_command_rejects_simulated_event_commands() {
         let mut state = RobotState::new(HashMap::new(), Duration::from_secs(1));
 
-        let applied = state
-            .apply_command(Uuid::new_v4(), "Robot Stack", &json!({}))
-            .expect("robot stack command");
+        let err = state
+            .apply_command(Uuid::new_v4(), "extreme_temperature", &json!({}))
+            .expect_err("simulated event command");
 
-        assert_eq!(
-            applied,
-            AppliedCommand::SimulateEvent {
-                event_type: "robot_stack".into(),
-                priority: "normal".into(),
-                interrupted_move_command_id: None
-            }
-        );
+        assert!(err.to_string().contains("unsupported command_type"));
     }
 }

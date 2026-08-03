@@ -25,6 +25,8 @@ use crate::{
     state::{AppliedCommand, RobotState},
 };
 
+const STARTUP_RECOVERY_REASON: &str = "simulator_restarted_before_completion";
+
 pub(crate) async fn run_robot(
     config: Config,
     state: Arc<Mutex<RobotState>>,
@@ -46,6 +48,8 @@ pub(crate) async fn run_robot(
             )
             .await
         });
+
+        recover_unfinished_commands(&client, &config, &state).await?;
 
         for topic in command_subscription_topics(&config.robot_id) {
             if let Err(err) = client.subscribe(topic, QoS::AtLeastOnce).await {
@@ -163,23 +167,43 @@ async fn run_eventloop(
                 let command_state = state.clone();
                 let command_metrics = metrics.clone();
                 let payload = publish.payload.to_vec();
-                tokio::spawn(async move {
-                    if let Err(err) = handle_command(
-                        &command_client,
-                        &command_config,
-                        &command_state,
-                        &command_metrics,
-                        &payload,
-                    )
-                    .await
-                    {
-                        warn!(
-                            robot_id = command_config.robot_id,
-                            error = %err,
-                            "command handling failed"
-                        );
-                    }
-                });
+                if is_simulated_event_topic(&publish.topic, &config.robot_id) {
+                    tokio::spawn(async move {
+                        if let Err(err) = handle_simulated_event_request(
+                            &command_client,
+                            &command_config,
+                            &command_state,
+                            &command_metrics,
+                            &payload,
+                        )
+                        .await
+                        {
+                            warn!(
+                                robot_id = command_config.robot_id,
+                                error = %err,
+                                "simulated event handling failed"
+                            );
+                        }
+                    });
+                } else {
+                    tokio::spawn(async move {
+                        if let Err(err) = handle_command(
+                            &command_client,
+                            &command_config,
+                            &command_state,
+                            &command_metrics,
+                            &payload,
+                        )
+                        .await
+                        {
+                            warn!(
+                                robot_id = command_config.robot_id,
+                                error = %err,
+                                "command handling failed"
+                            );
+                        }
+                    });
+                }
             }
             Ok(_) => metrics.mqtt_connection_status.set(1.0),
             Err(err) => {
@@ -360,12 +384,6 @@ async fn handle_command(
             .await?;
             return Ok(());
         }
-    }
-
-    if !should_track_processed_command(&command.command_type) {
-        metrics.commands_processed.inc();
-        handle_simulated_event_command(client, config, state, metrics, &command).await?;
-        return Ok(());
     }
 
     let is_new_command = existing_record.is_none();
@@ -599,24 +617,29 @@ async fn handle_command(
                 guard.finish_processing_command(command.command_id);
             }
             return Err(anyhow!(
-                "simulated event commands must be handled without processed-command tracking"
+                "simulated event commands are handled separately from command lifecycle"
             ));
         }
     }
     Ok(())
 }
 
-async fn handle_simulated_event_command(
+async fn handle_simulated_event_request(
     client: &AsyncClient,
     config: &Config,
     state: &Arc<Mutex<RobotState>>,
     metrics: &Metrics,
-    command: &RobotCommandMessage,
+    payload: &[u8],
 ) -> anyhow::Result<()> {
+    let command: RobotCommandMessage = serde_json::from_slice(payload)?;
     let applied = {
         let mut guard = state.lock().await;
-        guard.apply_command(command.command_id, &command.command_type, &command.payload)
-    }?;
+        match normalize_command_type(&command.command_type).as_str() {
+            "extreme_temperature" => guard.start_simulated_event("extreme_temperature", "high"),
+            "robot_stack" => guard.start_simulated_event("robot_stack", "normal"),
+            other => return Err(anyhow!("unsupported simulated event command_type: {other}")),
+        }
+    };
 
     let AppliedCommand::SimulateEvent {
         event_type,
@@ -660,7 +683,59 @@ async fn handle_simulated_event_command(
         guard.finish_safe_state();
     }
     publish_state(client, config, state).await?;
-    publish_sensor_event(client, config, metrics, command, &event_type, &priority).await?;
+    publish_sensor_event(client, config, metrics, &command, &event_type, &priority).await?;
+    Ok(())
+}
+
+async fn recover_unfinished_commands(
+    client: &AsyncClient,
+    config: &Config,
+    state: &Arc<Mutex<RobotState>>,
+) -> anyhow::Result<()> {
+    let unfinished_commands = {
+        let guard = state.lock().await;
+        guard
+            .processed_commands
+            .values()
+            .filter(|record| record.needs_recovery())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+
+    if unfinished_commands.is_empty() {
+        return Ok(());
+    }
+
+    warn!(
+        robot_id = config.robot_id,
+        unfinished_commands = unfinished_commands.len(),
+        "marking unfinished processed commands as failed after simulator restart"
+    );
+
+    for record in unfinished_commands {
+        publish_command_result_with_payload(
+            client,
+            config,
+            record.command_id,
+            "failed",
+            "command_failed",
+            startup_recovery_payload(&record),
+        )
+        .await?;
+
+        let failed_record = record.with_status(ProcessedCommandStatus::Failed, Utc::now());
+        let records = {
+            let guard = state.lock().await;
+            let mut records = guard.processed_commands.clone();
+            records.insert(failed_record.command_id, failed_record.clone());
+            records
+        };
+        persist_processed_commands(&config.processed_commands_path, &records).await?;
+
+        let mut guard = state.lock().await;
+        guard.remember_processed_command(failed_record);
+    }
+
     Ok(())
 }
 
@@ -709,6 +784,11 @@ fn command_subscription_topics(robot_id: &str) -> [String; 3] {
     ]
 }
 
+fn is_simulated_event_topic(topic: &str, robot_id: &str) -> bool {
+    topic == format!("robots/{robot_id}/simulated-events")
+        || topic == format!("robots/{robot_id}/commands/high-priority")
+}
+
 fn sensor_event_topic(robot_id: &str, priority: &str) -> String {
     if priority == "high" {
         format!("robots/{robot_id}/events/high-priority")
@@ -722,17 +802,6 @@ fn normalize_command_type(command_type: &str) -> String {
         .trim()
         .to_ascii_lowercase()
         .replace([' ', '-'], "_")
-}
-
-fn is_simulated_event_command(command_type: &str) -> bool {
-    matches!(
-        normalize_command_type(command_type).as_str(),
-        "extreme_temperature" | "robot_stack"
-    )
-}
-
-fn should_track_processed_command(command_type: &str) -> bool {
-    !is_simulated_event_command(command_type)
 }
 
 fn spawn_move_completion_watcher(
@@ -847,6 +916,14 @@ async fn publish_command_result_with_payload(
     Ok(())
 }
 
+fn startup_recovery_payload(record: &ProcessedCommandRecord) -> serde_json::Value {
+    json!({
+        "command_type": record.command_type.clone(),
+        "payload": record.payload.clone(),
+        "reason": STARTUP_RECOVERY_REASON,
+    })
+}
+
 async fn update_command_record_status(
     state: &Arc<Mutex<RobotState>>,
     path: &Path,
@@ -911,10 +988,29 @@ fn duplicate_publish_status(status: ProcessedCommandStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
+    use serde_json::json;
+    use uuid::Uuid;
+
     use super::{
-        command_subscription_topics, is_simulated_event_command, sensor_event_topic,
-        should_track_processed_command,
+        command_subscription_topics, is_simulated_event_topic, normalize_command_type,
+        sensor_event_topic, startup_recovery_payload, STARTUP_RECOVERY_REASON,
     };
+    use crate::persistence::{ProcessedCommandRecord, ProcessedCommandStatus};
+
+    fn sample_record() -> ProcessedCommandRecord {
+        ProcessedCommandRecord::new(
+            &robot_fleet_common::types::RobotCommandMessage {
+                command_id: Uuid::new_v4(),
+                robot_id: "robot-01".into(),
+                command_type: "move".into(),
+                payload: json!({ "target_position_x": 1.0, "target_position_y": 2.0 }),
+                expires_at: None,
+            },
+            ProcessedCommandStatus::Acknowledged,
+            Utc::now(),
+        )
+    }
 
     #[test]
     fn simulator_accepts_event_requests_on_current_and_legacy_topics() {
@@ -941,10 +1037,36 @@ mod tests {
     }
 
     #[test]
-    fn simulated_event_commands_are_not_tracked() {
-        assert!(is_simulated_event_command("extreme_temperature"));
-        assert!(is_simulated_event_command("Robot Stack"));
-        assert!(!should_track_processed_command("extreme_temperature"));
-        assert!(should_track_processed_command("move"));
+    fn simulated_event_topics_are_detected() {
+        assert!(is_simulated_event_topic(
+            "robots/robot-01/simulated-events",
+            "robot-01"
+        ));
+        assert!(is_simulated_event_topic(
+            "robots/robot-01/commands/high-priority",
+            "robot-01"
+        ));
+        assert!(!is_simulated_event_topic(
+            "robots/robot-01/commands",
+            "robot-01"
+        ));
+    }
+
+    #[test]
+    fn simulated_event_commands_are_normalized() {
+        assert_eq!(normalize_command_type("Robot Stack"), "robot_stack");
+    }
+
+    #[test]
+    fn startup_recovery_payload_includes_restart_reason() {
+        let record = sample_record();
+        let payload = startup_recovery_payload(&record);
+
+        assert_eq!(payload["command_type"], json!("move"));
+        assert_eq!(
+            payload["payload"],
+            json!({ "target_position_x": 1.0, "target_position_y": 2.0 })
+        );
+        assert_eq!(payload["reason"], json!(STARTUP_RECOVERY_REASON));
     }
 }
