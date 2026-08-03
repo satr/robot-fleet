@@ -164,8 +164,25 @@ mod tests {
 
     static TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
 
-    async fn test_state() -> Option<AppState> {
-        let database_url = std::env::var("DATABASE_URL").ok()?;
+    #[derive(Clone)]
+    struct TestConfig {
+        database_url: String,
+        mqtt_host: String,
+        mqtt_port: u16,
+    }
+
+    impl TestConfig {
+        fn from_env() -> Option<Self> {
+            Some(Self {
+                database_url: std::env::var("DATABASE_URL").ok()?,
+                mqtt_host: "localhost".into(),
+                mqtt_port: 1883,
+            })
+        }
+    }
+
+    async fn test_state(config: &TestConfig) -> AppState {
+        let database_url = config.database_url.clone();
         let pool = TEST_POOL
             .get_or_init(|| async move {
                 let pool = PgPoolOptions::new()
@@ -185,18 +202,18 @@ mod tests {
         let (mqtt, _) = AsyncClient::new(
             MqttOptions::new(
                 format!("backend-test-{}", Uuid::new_v4()),
-                "localhost",
-                1883,
+                &config.mqtt_host,
+                config.mqtt_port,
             ),
             1,
         );
 
-        Some(AppState {
+        AppState {
             pool,
             mqtt,
             metrics,
             robot_events: tokio::sync::broadcast::channel(16).0,
-        })
+        }
     }
 
     async fn command_row(
@@ -243,9 +260,10 @@ mod tests {
 
     #[tokio::test]
     async fn mqtt_command_results_transition_and_ignore_duplicate_delivery() {
-        let Some(state) = test_state().await else {
+        let Some(config) = TestConfig::from_env() else {
             return;
         };
+        let state = test_state(&config).await;
 
         let robot_id = format!("robot-{}", Uuid::new_v4());
         db::insert_placeholder_robot(&state.pool, &robot_id)
@@ -369,9 +387,10 @@ mod tests {
 
     #[tokio::test]
     async fn mqtt_command_resume_only_revives_stopped_commands() {
-        let Some(state) = test_state().await else {
+        let Some(config) = TestConfig::from_env() else {
             return;
         };
+        let state = test_state(&config).await;
 
         let robot_id = format!("robot-{}", Uuid::new_v4());
         db::insert_placeholder_robot(&state.pool, &robot_id)

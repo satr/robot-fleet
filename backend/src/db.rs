@@ -807,48 +807,27 @@ mod tests {
     };
     use crate::{app::AppState, metrics::Metrics};
 
-    #[allow(dead_code)]
-    static TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
     static SENSOR_EVENT_TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
 
-    #[allow(dead_code)]
-    async fn test_state() -> Option<AppState> {
-        let database_url = std::env::var("DATABASE_URL").ok()?;
-        let pool = TEST_POOL
-            .get_or_init(|| async move {
-                let pool = PgPoolOptions::new()
-                    .max_connections(5)
-                    .connect(&database_url)
-                    .await
-                    .expect("connect to PostgreSQL");
-                sqlx::migrate!("./migrations")
-                    .run(&pool)
-                    .await
-                    .expect("run migrations");
-                pool
-            })
-            .await
-            .clone();
-        let metrics = Arc::new(Metrics::new().expect("metrics"));
-        let (mqtt, _) = AsyncClient::new(
-            MqttOptions::new(
-                format!("backend-test-{}", Uuid::new_v4()),
-                "localhost",
-                1883,
-            ),
-            1,
-        );
-
-        Some(AppState {
-            pool,
-            mqtt,
-            metrics,
-            robot_events: tokio::sync::broadcast::channel(16).0,
-        })
+    #[derive(Clone)]
+    struct TestConfig {
+        database_url: String,
+        mqtt_host: String,
+        mqtt_port: u16,
     }
 
-    async fn sensor_event_test_state() -> Option<AppState> {
-        let database_url = std::env::var("DATABASE_URL").ok()?;
+    impl TestConfig {
+        fn from_env() -> Option<Self> {
+            Some(Self {
+                database_url: std::env::var("DATABASE_URL").ok()?,
+                mqtt_host: "localhost".into(),
+                mqtt_port: 1883,
+            })
+        }
+    }
+
+    async fn sensor_event_test_state(config: &TestConfig) -> AppState {
+        let database_url = config.database_url.clone();
         let pool = SENSOR_EVENT_TEST_POOL
             .get_or_init(|| async move {
                 let pool = PgPoolOptions::new()
@@ -926,18 +905,18 @@ mod tests {
         let (mqtt, _) = AsyncClient::new(
             MqttOptions::new(
                 format!("backend-test-{}", Uuid::new_v4()),
-                "localhost",
-                1883,
+                &config.mqtt_host,
+                config.mqtt_port,
             ),
             1,
         );
 
-        Some(AppState {
+        AppState {
             pool,
             mqtt,
             metrics,
             robot_events: tokio::sync::broadcast::channel(16).0,
-        })
+        }
     }
 
     #[test]
@@ -1038,9 +1017,10 @@ mod tests {
 
     #[tokio::test]
     async fn sensor_event_insert_accepts_null_command_id() {
-        let Some(state) = sensor_event_test_state().await else {
+        let Some(config) = TestConfig::from_env() else {
             return;
         };
+        let state = sensor_event_test_state(&config).await;
 
         let robot_id = format!("robot-{}", Uuid::new_v4());
         let message = RobotSensorEventMessage {
