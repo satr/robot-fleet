@@ -197,7 +197,7 @@ Stop it:
 make docker-down
 ```
 
-Stateful container data is stored in `data/` on the host:
+Stateful container data, including PostgreSQL tables, is stored in `data/` on the host and survives container restarts:
 
 - `data/postgres/`
 - `data/mqtt/`
