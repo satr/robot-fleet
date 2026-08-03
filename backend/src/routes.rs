@@ -10,6 +10,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use chrono::{DateTime, Duration, Utc};
 use prometheus::{Encoder, TextEncoder};
 use robot_fleet_common::types::{
     CommandResponse, CreateCommandRequest, HealthResponse, Robot, RobotCommandMessage,
@@ -20,6 +21,8 @@ use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
 
 use crate::{app, app::AppState, db, error::ApiError};
+
+const DEFAULT_COMMAND_TTL: Duration = Duration::minutes(5);
 
 pub(crate) fn router(state: AppState) -> Router {
     let cors = CorsLayer::new()
@@ -181,7 +184,7 @@ async fn create_command(
     }
     validate_command_request(&request)?;
 
-    let command = create_best_effort_command(
+    let command = create_command_for_robot(
         &state,
         &robot_id,
         &request.command_type,
@@ -208,7 +211,7 @@ async fn create_simulated_event(
     }
     validate_simulated_event_request(&request)?;
 
-    let _command = create_best_effort_command(
+    let _command = create_command_for_robot(
         &state,
         &robot_id,
         &request.command_type,
@@ -234,7 +237,7 @@ fn is_simulated_event_command(command_type: &str) -> bool {
     )
 }
 
-async fn create_best_effort_command(
+async fn create_command_for_robot(
     state: &AppState,
     robot_id: &str,
     command_type: &str,
@@ -242,9 +245,16 @@ async fn create_best_effort_command(
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
     topic: String,
 ) -> Result<CommandResponse, ApiError> {
-    db::insert_placeholder_robot(&state.pool, robot_id).await?;
-    let command =
-        db::create_command(&state.pool, robot_id, command_type, payload, expires_at).await?;
+    let _ = ensure_robot_accepts_commands(db::get_robot_view(&state.pool, robot_id).await?)?;
+
+    let command = db::create_command(
+        &state.pool,
+        robot_id,
+        command_type,
+        payload,
+        Some(command_expires_at(expires_at)),
+    )
+    .await?;
     state.metrics.commands_created.inc();
 
     let command =
@@ -263,6 +273,24 @@ async fn create_best_effort_command(
 
     app::broadcast_robot_update(state, robot_id).await;
     Ok(command)
+}
+
+fn ensure_robot_accepts_commands(robot: Option<Robot>) -> Result<Robot, ApiError> {
+    let Some(robot) = robot else {
+        return Err(ApiError::NotFound);
+    };
+
+    if robot.status == "offline" {
+        return Err(ApiError::BadRequest(
+            "robot must be online before commands can be created".into(),
+        ));
+    }
+
+    Ok(robot)
+}
+
+fn command_expires_at(expires_at: Option<DateTime<Utc>>) -> DateTime<Utc> {
+    expires_at.unwrap_or_else(|| Utc::now() + DEFAULT_COMMAND_TTL)
 }
 
 async fn publish_robot_command(
@@ -440,7 +468,9 @@ mod tests {
     use std::sync::Arc;
 
     use axum::{body::Body, http::Request, http::StatusCode};
-    use robot_fleet_common::types::{CommandResponse, CreateCommandRequest, RobotCommandMessage};
+    use robot_fleet_common::types::{
+        CommandResponse, CreateCommandRequest, Robot, RobotCommandMessage,
+    };
     use serde_json::json;
     use sqlx::postgres::PgPoolOptions;
     use tower::ServiceExt;
@@ -460,6 +490,32 @@ mod tests {
             mqtt,
             metrics,
             robot_events: tokio::sync::broadcast::channel(16).0,
+        }
+    }
+
+    fn test_robot(status: &str) -> Robot {
+        let now = chrono::Utc::now();
+        Robot {
+            robot_id: "robot-01".into(),
+            name: "Robot 01".into(),
+            status: status.into(),
+            battery_level: 100.0,
+            position_x: None,
+            position_y: None,
+            set_velocity: None,
+            velocity: None,
+            direction_degrees: None,
+            stop: false,
+            target_position_x: None,
+            target_position_y: None,
+            current_mission: None,
+            state: "idle".into(),
+            current_command: None,
+            current_command_status: None,
+            last_seen_at: Some(now),
+            software_version: "0.1.0".into(),
+            created_at: now,
+            updated_at: now,
         }
     }
 
@@ -579,6 +635,28 @@ mod tests {
         };
         assert!(validate_command_request(&regular_command_request).is_ok());
         assert!(validate_simulated_event_request(&regular_command_request).is_err());
+    }
+
+    #[test]
+    fn command_target_must_exist_and_be_online() {
+        assert!(matches!(
+            ensure_robot_accepts_commands(None),
+            Err(ApiError::NotFound)
+        ));
+        assert!(ensure_robot_accepts_commands(Some(test_robot("online"))).is_ok());
+        assert!(ensure_robot_accepts_commands(Some(test_robot("stale"))).is_ok());
+        assert!(matches!(
+            ensure_robot_accepts_commands(Some(test_robot("offline"))),
+            Err(ApiError::BadRequest(message))
+                if message == "robot must be online before commands can be created"
+        ));
+    }
+
+    #[test]
+    fn command_expiry_defaults_when_missing() {
+        let expires_at = command_expires_at(None);
+        assert!(expires_at > chrono::Utc::now());
+        assert!(expires_at <= chrono::Utc::now() + chrono::Duration::minutes(6));
     }
 
     #[test]

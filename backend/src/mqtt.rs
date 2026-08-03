@@ -91,7 +91,7 @@ pub(crate) async fn run_robot_status_broadcast(state: AppState) {
 pub(crate) async fn run_command_expiry(state: AppState) {
     loop {
         sleep(Duration::from_secs(2)).await;
-        if let Err(err) = deliver_commands(&state).await {
+        if let Err(err) = expire_commands(&state).await {
             warn!(error = %err, "failed to expire unacknowledged commands");
         }
     }
@@ -132,7 +132,7 @@ async fn handle_mqtt_message(state: &AppState, topic: &str, payload: &[u8]) -> a
     Ok(())
 }
 
-async fn deliver_commands(state: &AppState) -> anyhow::Result<()> {
+async fn expire_commands(state: &AppState) -> anyhow::Result<()> {
     let expired_commands = db::expire_unacknowledged_commands(state).await?;
     if !expired_commands.is_empty() {
         state

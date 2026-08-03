@@ -240,6 +240,8 @@ curl -X POST http://localhost:8089/robots/robot-01/commands \
 
 The backend assigns every command a unique `command_id`. Robots persist status-aware command records before publishing `acknowledged`, so repeated MQTT deliveries of the same command are acknowledged but not executed again.
 
+Command creation now requires the target robot to exist and not be offline, and the backend assigns a default expiry when `expires_at` is omitted so commands do not remain pending forever.
+
 `GET /health` and `GET /health/live` are liveness checks. `GET /health/ready` is the readiness check used by Docker Compose and returns success only when PostgreSQL and MQTT are reachable.
 
 Robot status in `GET /robots` and `GET /robots/{robot_id}` is computed from `last_seen_at`: `online` when the backend saw telemetry or state within 5 seconds, `stale` between 5 and 15 seconds, and `offline` after 15 seconds.
