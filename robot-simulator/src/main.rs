@@ -8,7 +8,6 @@ mod state;
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::warn;
 
 use crate::{
     config::Config, metrics::Metrics, metrics_server::run_metrics_server, mqtt::run_robot,
@@ -26,16 +25,6 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     let metrics = Arc::new(Metrics::new()?);
     let processed_commands = load_processed_commands(&config.processed_commands_path).await?;
-    let unfinished_commands = processed_commands
-        .values()
-        .filter(|record| record.needs_recovery())
-        .count();
-    if unfinished_commands > 0 {
-        warn!(
-            unfinished_commands,
-            "recovered unfinished processed commands from previous simulator run"
-        );
-    }
     let state = Arc::new(Mutex::new(RobotState::new(
         processed_commands,
         config.robot_state_interval,
