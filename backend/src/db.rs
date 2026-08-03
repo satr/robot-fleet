@@ -787,18 +787,158 @@ fn command_from_row(row: sqlx::postgres::PgRow) -> CommandResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use chrono::Utc;
     use robot_fleet_common::{
         status::robot_status_from_last_seen,
-        types::{CommandResultMessage, StateMessage},
+        types::{CommandResultMessage, RobotSensorEventMessage, StateMessage},
     };
+    use rumqttc::{AsyncClient, MqttOptions};
     use serde_json::json;
+    use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+    use tokio::sync::OnceCell;
     use uuid::Uuid;
 
     use super::{
-        command_state_projection, robot_state_history_snapshot_is_duplicate,
-        CommandStateProjection, RobotStateHistorySnapshot,
+        command_state_projection, insert_robot_sensor_event,
+        robot_state_history_snapshot_is_duplicate, CommandStateProjection,
+        RobotStateHistorySnapshot,
     };
+    use crate::{app::AppState, metrics::Metrics};
+
+    #[allow(dead_code)]
+    static TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
+    static SENSOR_EVENT_TEST_POOL: OnceCell<PgPool> = OnceCell::const_new();
+
+    #[allow(dead_code)]
+    async fn test_state() -> Option<AppState> {
+        let database_url = std::env::var("DATABASE_URL").ok()?;
+        let pool = TEST_POOL
+            .get_or_init(|| async move {
+                let pool = PgPoolOptions::new()
+                    .max_connections(5)
+                    .connect(&database_url)
+                    .await
+                    .expect("connect to PostgreSQL");
+                sqlx::migrate!("./migrations")
+                    .run(&pool)
+                    .await
+                    .expect("run migrations");
+                pool
+            })
+            .await
+            .clone();
+        let metrics = Arc::new(Metrics::new().expect("metrics"));
+        let (mqtt, _) = AsyncClient::new(
+            MqttOptions::new(
+                format!("backend-test-{}", Uuid::new_v4()),
+                "localhost",
+                1883,
+            ),
+            1,
+        );
+
+        Some(AppState {
+            pool,
+            mqtt,
+            metrics,
+            robot_events: tokio::sync::broadcast::channel(16).0,
+        })
+    }
+
+    async fn sensor_event_test_state() -> Option<AppState> {
+        let database_url = std::env::var("DATABASE_URL").ok()?;
+        let pool = SENSOR_EVENT_TEST_POOL
+            .get_or_init(|| async move {
+                let pool = PgPoolOptions::new()
+                    .max_connections(5)
+                    .connect(&database_url)
+                    .await
+                    .expect("connect to PostgreSQL");
+
+                sqlx::query(
+                    "CREATE TABLE IF NOT EXISTS robots (
+                        robot_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        battery_level DOUBLE PRECISION NOT NULL DEFAULT 0,
+                        position_x DOUBLE PRECISION,
+                        position_y DOUBLE PRECISION,
+                        set_velocity DOUBLE PRECISION,
+                        velocity DOUBLE PRECISION,
+                        direction_degrees DOUBLE PRECISION,
+                        stop BOOLEAN NOT NULL DEFAULT FALSE,
+                        target_position_x DOUBLE PRECISION,
+                        target_position_y DOUBLE PRECISION,
+                        current_mission TEXT,
+                        state TEXT NOT NULL DEFAULT 'idle',
+                        current_command TEXT,
+                        current_command_status TEXT,
+                        last_seen_at TIMESTAMPTZ,
+                        software_version TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )",
+                )
+                .execute(&pool)
+                .await
+                .expect("create robots table");
+
+                sqlx::query(
+                    "CREATE TABLE IF NOT EXISTS commands (
+                        command_id UUID PRIMARY KEY,
+                        robot_id TEXT NOT NULL REFERENCES robots(robot_id) ON DELETE CASCADE,
+                        command_type TEXT NOT NULL,
+                        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        status TEXT NOT NULL DEFAULT 'created',
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        expires_at TIMESTAMPTZ,
+                        acknowledged_at TIMESTAMPTZ,
+                        completed_at TIMESTAMPTZ
+                    )",
+                )
+                .execute(&pool)
+                .await
+                .expect("create commands table");
+
+                sqlx::query(
+                    "CREATE TABLE IF NOT EXISTS robot_sensor_events (
+                        event_id UUID NOT NULL,
+                        robot_id TEXT NOT NULL REFERENCES robots(robot_id) ON DELETE CASCADE,
+                        event_type TEXT NOT NULL,
+                        priority TEXT NOT NULL,
+                        command_id UUID REFERENCES commands(command_id) ON DELETE SET NULL,
+                        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        occurred_at TIMESTAMPTZ NOT NULL,
+                        PRIMARY KEY (event_id, occurred_at)
+                    )",
+                )
+                .execute(&pool)
+                .await
+                .expect("create robot_sensor_events table");
+
+                pool
+            })
+            .await
+            .clone();
+        let metrics = Arc::new(Metrics::new().expect("metrics"));
+        let (mqtt, _) = AsyncClient::new(
+            MqttOptions::new(
+                format!("backend-test-{}", Uuid::new_v4()),
+                "localhost",
+                1883,
+            ),
+            1,
+        );
+
+        Some(AppState {
+            pool,
+            mqtt,
+            metrics,
+            robot_events: tokio::sync::broadcast::channel(16).0,
+        })
+    }
 
     #[test]
     fn robot_status_is_derived_from_last_seen_age() {
@@ -894,5 +1034,47 @@ mod tests {
         };
 
         assert!(robot_state_history_snapshot_is_duplicate(&message, &latest));
+    }
+
+    #[tokio::test]
+    async fn sensor_event_insert_accepts_null_command_id() {
+        let Some(state) = sensor_event_test_state().await else {
+            return;
+        };
+
+        let robot_id = format!("robot-{}", Uuid::new_v4());
+        let message = RobotSensorEventMessage {
+            event_id: Uuid::new_v4(),
+            robot_id: robot_id.clone(),
+            event_type: "extreme_temperature".into(),
+            priority: "high".into(),
+            command_id: None,
+            payload: json!({
+                "source": "test",
+                "simulation_request_id": Uuid::new_v4(),
+            }),
+            occurred_at: Utc::now(),
+        };
+
+        insert_robot_sensor_event(&state, &message)
+            .await
+            .expect("insert sensor event");
+
+        let row = sqlx::query(
+            "SELECT command_id, robot_id, event_type, priority, payload
+             FROM robot_sensor_events
+             WHERE event_id = $1 AND occurred_at = $2",
+        )
+        .bind(message.event_id)
+        .bind(message.occurred_at)
+        .fetch_one(&state.pool)
+        .await
+        .expect("sensor event row");
+
+        let command_id: Option<Uuid> = row.get("command_id");
+        assert!(command_id.is_none());
+        assert_eq!(row.get::<String, _>("robot_id"), robot_id);
+        assert_eq!(row.get::<String, _>("event_type"), "extreme_temperature");
+        assert_eq!(row.get::<String, _>("priority"), "high");
     }
 }

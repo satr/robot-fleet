@@ -752,11 +752,12 @@ async fn publish_sensor_event(
         robot_id: config.robot_id.clone(),
         event_type: event_type.into(),
         priority: priority.into(),
-        command_id: Some(command.command_id),
+        command_id: None,
         payload: json!({
             "source": "robot_simulator",
             "safe_state_command": "get_to_safe_state",
             "simulated_by_command_type": command.command_type,
+            "simulation_request_id": command.command_id,
         }),
         occurred_at: Utc::now(),
     };
