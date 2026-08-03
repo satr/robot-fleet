@@ -235,7 +235,7 @@ pub(crate) async fn persist_processed_commands(
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    let tmp_path = path.with_extension("jsonl.tmp");
+    let tmp_path = path.with_extension("json.tmp");
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -278,7 +278,7 @@ mod tests {
     async fn processed_command_records_are_persisted_and_loaded() {
         let command_id = Uuid::new_v4();
         let path = std::env::temp_dir().join(format!(
-            "robot-simulator-processed-commands-{command_id}.jsonl"
+            "robot-simulator-processed-commands-{command_id}.json"
         ));
         let command = sample_command(command_id);
         let record =
@@ -310,7 +310,7 @@ mod tests {
     async fn legacy_processed_command_ids_are_still_loaded() {
         let command_id = Uuid::new_v4();
         let path = std::env::temp_dir().join(format!(
-            "robot-simulator-processed-commands-legacy-{command_id}.jsonl"
+            "robot-simulator-processed-commands-legacy-{command_id}.json"
         ));
 
         tokio::fs::write(&path, format!("{command_id}\n"))
@@ -334,7 +334,7 @@ mod tests {
     async fn processed_commands_are_serialized_as_keyed_json() {
         let command_id = Uuid::new_v4();
         let path = std::env::temp_dir().join(format!(
-            "robot-simulator-processed-commands-json-{command_id}.jsonl"
+            "robot-simulator-processed-commands-json-{command_id}.json"
         ));
         let command = sample_command(command_id);
         let record =
@@ -406,7 +406,7 @@ mod tests {
     async fn processed_commands_survive_restart_and_keep_duplicate_behavior() {
         let command_id = Uuid::new_v4();
         let path = std::env::temp_dir().join(format!(
-            "robot-simulator-processed-commands-restart-{command_id}.jsonl"
+            "robot-simulator-processed-commands-restart-{command_id}.json"
         ));
         let command = sample_command(command_id);
         let running =

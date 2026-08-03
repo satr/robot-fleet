@@ -755,7 +755,7 @@ async fn publish_sensor_event(
         command_id: Some(command.command_id),
         payload: json!({
             "source": "robot_simulator",
-            "safe_state_command": "get_to_save_state",
+            "safe_state_command": "get_to_safe_state",
             "simulated_by_command_type": command.command_type,
         }),
         occurred_at: Utc::now(),

@@ -1,12 +1,12 @@
 # Robot Fleet
 
-Robot Fleet is a prototype that demonstrates the control loop of a robot fleet platform: an operator issues a command, the backend persists it, MQTT delivers it to a robot, the robot records the receipt durably, and the backend projects the outcome back into state and metrics.
+Robot Fleet is a prototype that demonstrates the control loop of a robot fleet platform: an operator issues a command, the backend persists it, MQTT delivers it to a robot, the robot records the receipt before acknowledgement, and the backend projects the outcome back into state and metrics.
 
 What is implemented: a Rust backend, a SvelteKit operator shell, MQTT-connected robot simulators, PostgreSQL plus TimescaleDB persistence, Prometheus/VictoriaMetrics/Grafana/Alertmanager observability, command lifecycle tracking, and last-seen-based robot status.
 
 What is excluded on purpose: authentication, TLS, a production frontend, Kafka in the implemented path, realistic robot physics, and exactly-once execution claims.
 
-Guarantees this prototype does make: commands are written before publish, robot receipts are idempotent, duplicate QoS 1 deliveries do not execute twice, and readiness reflects the actual DB and MQTT dependencies.
+Guarantees this prototype does make: commands are written before publish, robot receipts are idempotent, duplicate QoS 1 deliveries of operational commands do not execute twice, simulated events are deliberately untracked, and readiness reflects the actual DB and MQTT dependencies.
 
 Guarantees it does not make: end-to-end exactly-once delivery, lossless delivery across arbitrary crashes, or production-grade security and scaling.
 
@@ -70,7 +70,7 @@ sequenceDiagram
         Backend->>DB: update status=publish_failed
     else publish succeeds
         MQTT-->>Robot: deliver command
-        Robot->>Robot: persist receipt durably
+        Robot->>Robot: persist receipt before acknowledgement
         Robot-->>MQTT: acknowledged
         MQTT-->>Backend: acknowledged
         Backend->>DB: update status=acknowledged
@@ -167,7 +167,7 @@ make web-run
 
 Prometheus scrapes the local backend at `host.docker.internal:8089` and one local simulator at `host.docker.internal:9100`, then remote-writes metrics to VictoriaMetrics. Grafana queries VictoriaMetrics through its Prometheus-compatible API. vmalert evaluates alert rules against VictoriaMetrics and forwards notifications to Alertmanager.
 
-For local simulator runs, processed command records are stored in `data/robots/<ROBOT_ID>/processed_commands.jsonl`. Docker simulators store the same idempotency state under their mounted `/state` volume.
+For local simulator runs, processed command records are stored in `data/robots/<ROBOT_ID>/processed_commands.json`. Docker simulators store the same idempotency state under their mounted `/state` volume.
 
 `ROBOT_ID` is the logical robot identity used in topics and payloads. The simulator uses a separate MQTT client ID, generated per process by default, so multiple local simulator processes do not take over each other's broker sessions. Set `MQTT_CLIENT_ID` only when you need a specific MQTT client identity.
 
@@ -207,7 +207,7 @@ Stateful container data is stored in `data/` on the host:
 - `data/robots/robot-02/`
 - `data/robots/robot-03/`
 
-Each robot directory contains `processed_commands.jsonl`, which stores a JSON object keyed by command UUID with the latest lifecycle metadata for each command. This makes command handling idempotent across duplicate MQTT deliveries and simulator restarts.
+Each robot directory contains `processed_commands.json`, a single pretty-printed JSON object keyed by command UUID with the latest lifecycle metadata for each operational command. Simulated events are deliberately untracked.
 
 ## Service URLs
 
@@ -238,7 +238,7 @@ curl -X POST http://localhost:8089/robots/robot-01/commands \
   -d '{"command_type":"move","payload":{"target_position":{"x":100,"y":50}}}'
 ```
 
-The backend assigns every command a unique `command_id`. Robots persist status-aware command records before publishing `acknowledged`, so repeated MQTT deliveries of the same command are acknowledged but not executed again.
+The backend assigns every command a unique `command_id`. Robots persist status-aware command records before acknowledging, so repeated MQTT deliveries of the same operational command are acknowledged but not executed again.
 
 Command creation now requires the target robot to exist and not be offline, and the backend assigns a default expiry when `expires_at` is omitted so commands do not remain pending forever.
 
@@ -279,7 +279,7 @@ Command messages sent by the backend to `robots/{robot_id}/commands` include the
 
 Simulator command lifecycle states are published to `robots/{robot_id}/command-results` as `acknowledged`, `running`, `completed`, `failed`, `expired`, or `stopped`. `move` runs until the robot reaches the target at the current `set_velocity`; a later `move` overrides the active move and marks the prior move `stopped`. `set_velocity` can run while a move is active and immediately changes the operating velocity used by that move. `stop` with `true` pauses motion and reports the active move as `stopped`; `stop` with `false` resumes toward the last target position using the current set velocity.
 
-The simulator also accepts `extreme_temperature` and `robot_stack` event simulation requests on `robots/{robot_id}/simulated-events` and the legacy `robots/{robot_id}/commands/high-priority` topic. `extreme_temperature` publishes the resulting sensor event to `robots/{robot_id}/events/high-priority`, which the backend subscribes to separately; `robot_stack` publishes to the normal `robots/{robot_id}/events` topic. Both stop the active move, run the internal `get_to_save_state` safe-state command, publish robot state as `idle in safe state`, and emit a sensor event metric (`robot_sensor_events_total`) consumed by the Grafana dashboard and vmalert rules.
+The simulator also accepts `extreme_temperature` and `robot_stack` event simulation requests on `robots/{robot_id}/simulated-events` and the legacy `robots/{robot_id}/commands/high-priority` topic. `extreme_temperature` publishes the resulting sensor event to `robots/{robot_id}/events/high-priority`, which the backend subscribes to separately; `robot_stack` publishes to the normal `robots/{robot_id}/events` topic. Both stop the active move, run the internal `get_to_safe_state` safe-state command, publish robot state as `idle in safe state`, and emit a sensor event metric (`robot_sensor_events_total`) consumed by the Grafana dashboard and vmalert rules. These simulated events are handled separately and are not written to `processed_commands.json`.
 
 ## Configuration
 
@@ -307,7 +307,8 @@ PUBLIC_BACKEND_WS_URL
 
 - Backend route unit tests cover health and readiness behavior, command validation, and the robot-command payload shape.
 - Database unit tests cover robot status derivation from `last_seen_at`, command-result projection into robot state, and duplicate state-history suppression.
-- `backend/src/mqtt.rs` has a real-PostgreSQL integration test that runs migrations, applies `acknowledged -> running -> completed`, and ignores duplicate command-result delivery.
+- `backend/src/mqtt.rs` has a real-PostgreSQL integration test that runs migrations, applies `acknowledged -> running -> completed`, and ignores duplicate command-result delivery when `DATABASE_URL` is set. Without `DATABASE_URL`, it exits successfully without exercising PostgreSQL.
+- On simulator startup, any unfinished processed command is marked failed and published with reason `simulator_restarted_before_completion` instead of being replayed.
 
 ### What remains untested
 
@@ -365,7 +366,7 @@ curl -sf "http://localhost:8089/metrics" | grep -E 'robots_(online|stale|offline
 ### Demoing the important states
 
 - Offline/stale transitions: stop one simulator with `make robot1-down`, wait 6 seconds for `stale`, then wait 10 more seconds for `offline`.
-- Duplicate commands: post a command, then restart the simulator while the broker may redeliver QoS 1 traffic; the persisted receipt file prevents double execution.
+- Duplicate commands: publish the same command payload and `command_id` twice; the second delivery is acknowledged without re-execution.
 - Command completion: issue a normal `move` or `set_velocity` command and watch `created -> acknowledged -> running -> completed` through `/robots/{robot_id}/commands`.
 - Grafana metrics: open `http://localhost:3000` and use the dashboard, or query `GET /metrics` for the same counters and gauges.
 

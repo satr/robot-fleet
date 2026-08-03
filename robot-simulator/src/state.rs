@@ -268,7 +268,7 @@ impl RobotState {
         self.velocity = 0.0;
         self.stop = true;
         self.safe_state = false;
-        self.current_mission = Some("get_to_save_state".into());
+        self.current_mission = Some("get_to_safe_state".into());
         self.refresh_operating_state();
         AppliedCommand::SimulateEvent {
             event_type: event_type.into(),
@@ -596,8 +596,8 @@ mod tests {
         );
         assert_eq!(state.velocity, 0.0);
         assert!(state.stop);
-        assert_eq!(state.current_mission.as_deref(), Some("get_to_save_state"));
-        assert_eq!(state.state, "running: get_to_save_state");
+        assert_eq!(state.current_mission.as_deref(), Some("get_to_safe_state"));
+        assert_eq!(state.state, "running: get_to_safe_state");
 
         state.finish_safe_state();
 
