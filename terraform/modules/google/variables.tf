@@ -1,0 +1,11 @@
+variable "environment" { type = string }
+variable "project_id" { type = string }
+variable "region" { type = string }
+variable "zone" { type = string }
+variable "name_prefix" { type = string }
+variable "backend_image" { type = string }
+variable "web_image" { type = string }
+variable "robot_image" { type = string }
+variable "database_tier" { type = string }
+variable "vm_machine_type" { type = string }
+variable "database_deletion_protection" { type = bool }

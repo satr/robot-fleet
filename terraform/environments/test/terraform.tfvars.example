@@ -1,0 +1,7 @@
+# Terraform variables are loaded from the repository's .env.test file.
+# Copy the repository root's .env.test.example to .env.test, then source it
+# before running Terraform:
+#
+#   set -a
+#   . ../../../.env.test
+#   set +a

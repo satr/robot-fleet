@@ -1,0 +1,9 @@
+variable "cloud_vendor" { type = string }
+variable "gcp_project_id" { type = string }
+variable "gcp_region" { type = string }
+variable "gcp_zone" { type = string }
+variable "backend_image" { type = string }
+variable "web_image" { type = string }
+variable "robot_image" { type = string }
+variable "database_tier" { type = string }
+variable "vm_machine_type" { type = string }
