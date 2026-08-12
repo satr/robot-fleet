@@ -52,6 +52,18 @@ flowchart LR
 
 This shows a later production path, not the current implementation. Observability and alerting are already part of the stack; the remaining future work is mainly around scale-out, auth/TLS, and event-driven decomposition.
 
+### Local and Cloud Run modes
+
+Local development remains available through `make dev` or `make docker-up`;
+local Mosquitto supports TCP on `1883` and WebSockets on `9001`. The
+free-tier-oriented Cloud Run test deployment uses one combined backend image
+that runs PostgreSQL and Mosquitto in the same ephemeral instance. The backend
+serves HTTP and proxies public MQTT-over-WebSockets at its root endpoint, so
+remote simulators use `MQTT_URL=wss://<backend-service-url>`. `make
+cloud-deploy-test` and `make cloud-deploy-prod` use separate projects; see
+`terraform/README.md`. This mode intentionally has no authentication and loses
+database state on instance replacement or scale-to-zero.
+
 ## Command lifecycle
 
 ```mermaid

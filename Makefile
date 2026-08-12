@@ -11,8 +11,17 @@ PROCESSED_COMMANDS_PATH ?= data/robots/$(ROBOT_ID)/processed_commands.json
 WEB_PORT ?= 5173
 PUBLIC_BACKEND_HTTP_URL ?= http://localhost:8089
 PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
+GCP_REGION ?= us-central1
+GCP_TEST_PROJECT ?= robot-fleet-test
+GCP_PROD_PROJECT ?= robot-fleet-prod
+GCP_ENV ?= test
+GCP_PROJECT ?= $(if $(filter prod,$(GCP_ENV)),$(GCP_PROD_PROJECT),$(GCP_TEST_PROJECT))
+AR_REPOSITORY ?= robot-fleet-$(GCP_ENV)-images
+AR_HOST ?= $(GCP_REGION)-docker.pkg.dev
+BACKEND_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/backend:latest
+WEB_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/web:latest
 
-.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs clean
+.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs cloud-deploy cloud-deploy-test cloud-deploy-prod cloud-start cloud-stop cloud-start-test cloud-stop-test cloud-start-prod cloud-stop-prod clean
 
 help:
 	@echo "Robot Fleet commands:"
@@ -41,6 +50,10 @@ help:
 	@echo "  make docker-up      Build and start the full platform"
 	@echo "  make docker-down    Stop the full platform"
 	@echo "  make docker-logs    Follow all Docker logs"
+	@echo "  make cloud-deploy-test  Build and deploy test to GCP_TEST_PROJECT"
+	@echo "  make cloud-deploy-prod  Build and deploy prod to GCP_PROD_PROJECT"
+	@echo "  make cloud-start GCP_ENV=test|prod  Restore one Cloud Run instance"
+	@echo "  make cloud-stop GCP_ENV=test|prod   Scale Cloud Run services to zero"
 	@echo "  make clean          Remove build artifacts"
 
 infra-up:
@@ -159,3 +172,44 @@ docker-logs:
 
 clean:
 	cargo clean
+
+cloud-deploy:
+	@set -eu; \
+	project="$(GCP_PROJECT)"; env_name="$(GCP_ENV)"; \
+	gcloud config set project "$$project" --quiet; \
+	gcloud artifacts repositories describe "$(AR_REPOSITORY)" --location="$(GCP_REGION)" >/dev/null 2>&1 || \
+	  gcloud artifacts repositories create "$(AR_REPOSITORY)" --repository-format=docker --location="$(GCP_REGION)" --quiet; \
+	gcloud builds submit --tag "$(BACKEND_IMAGE)" --file backend/Dockerfile.cloud . --quiet; \
+	gcloud builds submit --tag "$(WEB_IMAGE)" --file web-app/Dockerfile . --quiet; \
+	TF_VAR_gcp_project_id="$$project" TF_VAR_gcp_region="$(GCP_REGION)" \
+	TF_VAR_backend_image="$(BACKEND_IMAGE)" TF_VAR_web_image="$(WEB_IMAGE)" \
+	  terraform -chdir="terraform/environments/$$env_name" init -input=false -backend-config=../../"$$env_name".backend >/dev/null; \
+	TF_VAR_gcp_project_id="$$project" TF_VAR_gcp_region="$(GCP_REGION)" \
+	TF_VAR_backend_image="$(BACKEND_IMAGE)" TF_VAR_web_image="$(WEB_IMAGE)" \
+	  terraform -chdir="terraform/environments/$$env_name" apply -auto-approve -input=false
+
+cloud-deploy-test:
+	$(MAKE) cloud-deploy GCP_ENV=test GCP_PROJECT="$(GCP_TEST_PROJECT)"
+
+cloud-deploy-prod:
+	$(MAKE) cloud-deploy GCP_ENV=prod GCP_PROJECT="$(GCP_PROD_PROJECT)"
+
+cloud-start:
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-backend" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 1 --max 1 --quiet
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-web" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 1 --max 1 --quiet
+
+cloud-stop:
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-backend" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 0 --max 1 --quiet
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-web" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 0 --max 1 --quiet
+
+cloud-start-test:
+	$(MAKE) cloud-start GCP_ENV=test GCP_PROJECT="$(GCP_TEST_PROJECT)"
+
+cloud-stop-test:
+	$(MAKE) cloud-stop GCP_ENV=test GCP_PROJECT="$(GCP_TEST_PROJECT)"
+
+cloud-start-prod:
+	$(MAKE) cloud-start GCP_ENV=prod GCP_PROJECT="$(GCP_PROD_PROJECT)"
+
+cloud-stop-prod:
+	$(MAKE) cloud-stop GCP_ENV=prod GCP_PROJECT="$(GCP_PROD_PROJECT)"

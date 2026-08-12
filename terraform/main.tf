@@ -7,17 +7,13 @@ module "google" {
   source = "./modules/google"
   count  = var.cloud_vendor == "google" ? 1 : 0
 
-  environment                  = var.environment
-  project_id                   = var.gcp_project_id
-  region                       = var.gcp_region
-  zone                         = var.gcp_zone
-  name_prefix                  = var.name_prefix
-  backend_image                = var.backend_image
-  web_image                    = var.web_image
-  robot_image                  = var.robot_image
-  database_tier                = var.database_tier
-  vm_machine_type              = var.vm_machine_type
-  database_deletion_protection = var.database_deletion_protection
+  environment   = var.environment
+  project_id    = var.gcp_project_id
+  region        = var.gcp_region
+  name_prefix   = var.name_prefix
+  backend_image = var.backend_image
+  web_image     = var.web_image
+  min_instances = var.min_instances
 }
 
 resource "terraform_data" "unsupported_vendor" {

@@ -30,13 +30,9 @@ variable "gcp_project_id" {
 }
 
 variable "gcp_region" {
-  type    = string
-  default = "europe-west1"
-}
-
-variable "gcp_zone" {
-  type    = string
-  default = "europe-west1-b"
+  type        = string
+  description = "Google Cloud region used for the Artifact Registry repository and Firestore database location."
+  default     = "us-central1"
 }
 
 variable "name_prefix" {
@@ -44,32 +40,9 @@ variable "name_prefix" {
   description = "Prefix used for resource names."
 }
 
-variable "backend_image" {
-  type        = string
-  description = "Container image for the Rust backend."
-}
-
-variable "web_image" {
-  type        = string
-  description = "Container image for the SvelteKit web app."
-}
-
-variable "robot_image" {
-  type        = string
-  description = "Container image for the robot simulator."
-}
-
-variable "database_tier" {
-  type    = string
-  default = "db-custom-1-3840"
-}
-
-variable "vm_machine_type" {
-  type    = string
-  default = "e2-micro"
-}
-
-variable "database_deletion_protection" {
-  type    = bool
-  default = true
+variable "backend_image" { type = string }
+variable "web_image" { type = string }
+variable "min_instances" {
+  type    = number
+  default = 0
 }
