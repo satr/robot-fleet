@@ -42,6 +42,11 @@ variable "name_prefix" {
 
 variable "backend_image" { type = string }
 variable "web_image" { type = string }
+variable "image_tag" {
+  type        = string
+  description = "Docker image tag used when backend_image and web_image are not explicitly set."
+  default     = "latest"
+}
 variable "min_instances" {
   type    = number
   default = 0

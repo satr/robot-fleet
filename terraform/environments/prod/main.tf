@@ -12,6 +12,7 @@ module "environment" {
   name_prefix    = "robot-fleet-prod"
   backend_image  = var.backend_image
   web_image      = var.web_image
+  image_tag      = var.image_tag
   min_instances  = var.min_instances
 }
 

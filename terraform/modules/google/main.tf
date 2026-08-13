@@ -12,6 +12,23 @@ resource "google_project_service" "services" {
   disable_on_destroy = false
 }
 
+locals {
+  backend_image = var.backend_image != "" ? var.backend_image : format(
+    "%s-docker.pkg.dev/%s/%s-images/backend:%s",
+    var.region,
+    var.project_id,
+    var.name_prefix,
+    var.image_tag,
+  )
+  web_image = var.web_image != "" ? var.web_image : format(
+    "%s-docker.pkg.dev/%s/%s-images/web:%s",
+    var.region,
+    var.project_id,
+    var.name_prefix,
+    var.image_tag,
+  )
+}
+
 resource "google_artifact_registry_repository" "images" {
   project       = var.project_id
   location      = var.region
@@ -35,7 +52,7 @@ resource "google_cloud_run_v2_service" "backend" {
       max_instance_count = 1
     }
     containers {
-      image = var.backend_image
+      image = local.backend_image
       ports { container_port = 8080 }
       resources {
         limits   = { cpu = "1", memory = "512Mi" }
@@ -75,15 +92,11 @@ resource "google_cloud_run_v2_service" "web" {
       max_instance_count = 1
     }
     containers {
-      image = var.web_image
+      image = local.web_image
       ports { container_port = 8080 }
       resources {
         limits   = { cpu = "1", memory = "512Mi" }
         cpu_idle = true
-      }
-      env {
-        name  = "PORT"
-        value = "8080"
       }
       env {
         name  = "HOST"

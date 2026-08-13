@@ -1,4 +1,14 @@
-CREATE EXTENSION IF NOT EXISTS timescaledb;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_available_extensions
+        WHERE name = 'timescaledb'
+    ) THEN
+        EXECUTE 'CREATE EXTENSION IF NOT EXISTS timescaledb';
+    END IF;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS robots (
     robot_id TEXT PRIMARY KEY,
@@ -50,4 +60,14 @@ CREATE TABLE IF NOT EXISTS telemetry (
     PRIMARY KEY (robot_id, recorded_at)
 );
 
-SELECT create_hypertable('telemetry', 'recorded_at', if_not_exists => TRUE);
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_extension
+        WHERE extname = 'timescaledb'
+    ) THEN
+        PERFORM create_hypertable('telemetry', 'recorded_at', if_not_exists => TRUE);
+    END IF;
+END
+$$;
