@@ -14,7 +14,13 @@ Do not send sensitive data to these public services. Cloud Run and Artifact
 Registry usage remains subject to quotas and billing; the deployment avoids
 Cloud SQL, VMs, VPC connectors, static IPs, Firestore, and Pub/Sub.
 
-## Setup
+## Prerequisites
+
+Complete the [Google Cloud deployment prerequisites](PREREQUISITES.md) before
+deploying. It covers required tools, authentication, billing, environment
+files, Makefile provisioning, and optional GitHub Actions setup.
+
+## Local deployment
 
 Set a unique project ID for each environment in `.env.test` and `.env.prod`.
 For a private Google account, no organization ID is needed. If a project does
@@ -23,8 +29,6 @@ the Makefile creates the project without an organization and links that
 billing account. Install `gcloud` and Terraform, and authenticate:
 
 ```sh
-gcloud auth application-default login
-gcloud billing accounts list
 cp .env.test.example .env.test
 make cloud-deploy-test
 ```
@@ -60,7 +64,8 @@ Never put passwords or certificates in Terraform variables or image layers.
 
 The `Cloud deployment` workflow is available only through
 `workflow_dispatch`. Select `deploy-test`, `deploy-prod`, `start-test`,
-`stop-test`, `start-prod`, or `stop-prod`, and provide the image tag.
+`stop-test`, `start-prod`, or `stop-prod`. Deployment image tags are generated
+automatically for each workflow run.
 
 Configure these repository variables:
 

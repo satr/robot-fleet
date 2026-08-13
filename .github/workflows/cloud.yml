@@ -14,12 +14,6 @@ on:
           - stop-test
           - start-prod
           - stop-prod
-      image_tag:
-        description: Docker image tag used for deployment
-        required: true
-        default: latest
-        type: string
-
 permissions:
   contents: read
   id-token: write
@@ -32,7 +26,7 @@ jobs:
       GCP_TEST_PROJECT: ${{ vars.GCP_TEST_PROJECT }}
       GCP_PROD_PROJECT: ${{ vars.GCP_PROD_PROJECT }}
       GCP_BILLING_ACCOUNT: ${{ secrets.GCP_BILLING_ACCOUNT }}
-      IMAGE_TAG: ${{ inputs.image_tag }}
+      IMAGE_TAG: run-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Check out repository
