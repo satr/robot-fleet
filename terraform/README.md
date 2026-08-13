@@ -53,6 +53,20 @@ Production uses the separate project and command:
 make cloud-deploy-prod
 ```
 
+Robot simulators are deployed independently to their own project. Set
+`GCP_SIMULATOR_PROJECT_ID` and the backend WebSocket URL in the matching
+`.env.test` or `.env.prod`, then run:
+
+```sh
+make simulator-deploy-test
+make simulator-stop-test
+make simulator-start-test
+```
+
+The simulator deployment builds one image and runs `robot-01`, `robot-02`, and
+`robot-03` as separate Cloud Run services. Use the corresponding `*-prod`
+targets for production.
+
 The deploy target builds both images with Cloud Build, pushes them to the
 environment's Artifact Registry repository, and runs noninteractive Terraform.
 `make cloud-start-test`, `cloud-stop-test`, `cloud-start-prod`, and
@@ -83,3 +97,12 @@ The service account must be allowed to use the configured workload identity
 provider and have permissions for project creation (when needed), billing
 linking (when needed), Cloud Build, Artifact Registry, Cloud Run, Terraform
 state storage, and service enablement.
+
+The `Robot simulator deployment` workflow uses separate repository variables
+`GCP_SIMULATOR_TEST_PROJECT`, `GCP_SIMULATOR_PROD_PROJECT`,
+`SIMULATOR_MQTT_URL_TEST`, and `SIMULATOR_MQTT_URL_PROD`, plus secrets
+`GCP_SIMULATOR_WORKLOAD_IDENTITY_PROVIDER` and
+`GCP_SIMULATOR_DEPLOY_SERVICE_ACCOUNT`. Create these credentials with
+`make simulator-github-auth-test` and
+`make simulator-github-auth-prod`; the simulator service account needs the
+same deployment roles in its simulator project.
