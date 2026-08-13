@@ -41,6 +41,20 @@ jobs:
       - name: Set up Google Cloud CLI
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Enable Cloud Billing API
+        shell: bash
+        env:
+          GCP_WIF_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+        run: |
+          set -euo pipefail
+          bootstrap_project_number="$(printf '%s' "${GCP_WIF_PROVIDER}" | sed -n 's#^projects/\([0-9][0-9]*\)/.*#\1#p')"
+          test -n "${bootstrap_project_number}" || {
+            echo "GCP_WORKLOAD_IDENTITY_PROVIDER must be a projects/... resource" >&2
+            exit 1
+          }
+          gcloud services enable cloudbilling.googleapis.com \
+            --project="${bootstrap_project_number}" --quiet
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
 

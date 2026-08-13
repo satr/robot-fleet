@@ -10,9 +10,12 @@ service_account_id="${GCP_DEPLOY_SERVICE_ACCOUNT_ID:-github-deployer}"
 provider_secret="${GITHUB_WIF_PROVIDER_SECRET:-GCP_WORKLOAD_IDENTITY_PROVIDER}"
 service_account_secret="${GITHUB_DEPLOY_SERVICE_ACCOUNT_SECRET:-GCP_DEPLOY_SERVICE_ACCOUNT}"
 project_variable="${GITHUB_PROJECT_VARIABLE:-}"
+mqtt_url_variable="${GITHUB_MQTT_URL_VARIABLE:-}"
+mqtt_url="${SIMULATOR_MQTT_URL:-}"
 
 gcloud services enable \
   cloudresourcemanager.googleapis.com \
+  cloudbilling.googleapis.com \
   iam.googleapis.com \
   iamcredentials.googleapis.com \
   sts.googleapis.com \
@@ -98,5 +101,12 @@ set_github_secret "$provider_secret" "$provider"
 set_github_secret "$service_account_secret" "$service_account"
 if [ -n "$project_variable" ]; then
   gh variable set "$project_variable" --repo "$repo" --body "$project"
+fi
+if [ -n "$mqtt_url_variable" ]; then
+  test -n "$mqtt_url" || {
+    echo "SIMULATOR_MQTT_URL is required to set $mqtt_url_variable" >&2
+    exit 1
+  }
+  gh variable set "$mqtt_url_variable" --repo "$repo" --body "$mqtt_url"
 fi
 echo "Configured GitHub OIDC auth for $project in $repo"
