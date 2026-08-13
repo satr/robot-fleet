@@ -12,19 +12,25 @@ WEB_PORT ?= 5173
 PUBLIC_BACKEND_HTTP_URL ?= http://localhost:8089
 PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
 GCP_REGION ?= us-central1
-GCP_TEST_PROJECT ?= robot-fleet-test-00000000-0000-0000-0000-000000000001
-GCP_PROD_PROJECT ?= robot-fleet-prod-00000000-0000-0000-0000-000000000001
+GCP_TEST_PROJECT ?= robot-fleet-test-00000001
+GCP_PROD_PROJECT ?= robot-fleet-prod-00000001
+GCP_SIMULATOR_TEST_PROJECT ?= robot-fleet-sim-test-00000001
+GCP_SIMULATOR_PROD_PROJECT ?= robot-fleet-sim-prod-00000001
 GCP_ENV ?= test
 GCP_PROJECT ?= $(if $(filter prod,$(GCP_ENV)),$(GCP_PROD_PROJECT),$(GCP_TEST_PROJECT))
+GCP_SIMULATOR_PROJECT ?= $(if $(filter prod,$(GCP_ENV)),$(GCP_SIMULATOR_PROD_PROJECT),$(GCP_SIMULATOR_TEST_PROJECT))
 GCP_BILLING_ACCOUNT ?=
+SIMULATOR_MQTT_URL ?=
 REPO ?= satr/robot-fleet
 AR_REPOSITORY ?= robot-fleet-$(GCP_ENV)-images
+SIMULATOR_AR_REPOSITORY ?= robot-fleet-$(GCP_ENV)-simulator-images
 AR_HOST ?= $(GCP_REGION)-docker.pkg.dev
 IMAGE_TAG ?= run-$(shell date -u +%Y%m%d%H%M%S)-$(shell uuidgen | cut -d- -f1)
 BACKEND_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/backend:$(IMAGE_TAG)
 WEB_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/web:$(IMAGE_TAG)
+SIMULATOR_IMAGE ?= $(AR_HOST)/$(GCP_SIMULATOR_PROJECT)/$(SIMULATOR_AR_REPOSITORY)/simulator:$(IMAGE_TAG)
 
-.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs cloud-deploy cloud-deploy-test cloud-deploy-prod cloud-github-auth cloud-github-auth-test cloud-github-auth-prod cloud-start cloud-stop cloud-start-test cloud-stop-test cloud-start-prod cloud-stop-prod clean
+.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs cloud-deploy cloud-deploy-test cloud-deploy-prod cloud-github-auth cloud-github-auth-test cloud-github-auth-prod cloud-start cloud-stop cloud-start-test cloud-stop-test cloud-start-prod cloud-stop-prod simulator-deploy simulator-deploy-test simulator-deploy-prod simulator-start simulator-stop simulator-start-test simulator-stop-test simulator-start-prod simulator-stop-prod simulator-github-auth simulator-github-auth-test simulator-github-auth-prod clean
 
 help:
 	@echo "Robot Fleet commands:"
@@ -59,6 +65,10 @@ help:
 	@echo "  make cloud-github-auth-prod  Create prod GitHub OIDC auth and set repository secrets"
 	@echo "  make cloud-start GCP_ENV=test|prod  Restore one Cloud Run instance"
 	@echo "  make cloud-stop GCP_ENV=test|prod   Scale Cloud Run services to zero"
+	@echo "  make simulator-deploy-test  Deploy test robot simulators to GCP_SIMULATOR_TEST_PROJECT"
+	@echo "  make simulator-deploy-prod  Deploy prod robot simulators to GCP_SIMULATOR_PROD_PROJECT"
+	@echo "  make simulator-start GCP_ENV=test|prod  Restore simulator instances"
+	@echo "  make simulator-stop GCP_ENV=test|prod   Scale simulator services to zero"
 	@echo "  make clean          Remove build artifacts"
 
 infra-up:
@@ -238,3 +248,69 @@ cloud-start-prod:
 
 cloud-stop-prod:
 	$(MAKE) cloud-stop GCP_ENV=prod GCP_PROJECT="$(GCP_PROD_PROJECT)"
+
+simulator-deploy:
+	@GCP_PROJECT="$(GCP_SIMULATOR_PROJECT)" \
+	GCP_ENV="$(GCP_ENV)" \
+	GCP_REGION="$(GCP_REGION)" \
+	GCP_BILLING_ACCOUNT="$(GCP_BILLING_ACCOUNT)" \
+	AR_REPOSITORY="$(SIMULATOR_AR_REPOSITORY)" \
+	SIMULATOR_IMAGE="$(SIMULATOR_IMAGE)" \
+	SIMULATOR_MQTT_URL="$(SIMULATOR_MQTT_URL)" \
+		./scripts/simulator-deploy.sh
+
+simulator-deploy-test:
+	@set -eu; \
+	if [ -f .env.test ]; then set -a; . ./.env.test; set +a; fi; \
+	project="$${GCP_SIMULATOR_PROJECT_ID:-$(GCP_SIMULATOR_TEST_PROJECT)}"; \
+	mqtt_url="$${SIMULATOR_MQTT_URL:-}"; \
+	test -n "$$mqtt_url" || { echo "SIMULATOR_MQTT_URL is required in .env.test or the environment" >&2; exit 1; }; \
+	$(MAKE) simulator-deploy GCP_ENV=test GCP_PROJECT="$$project" GCP_SIMULATOR_PROJECT="$$project" SIMULATOR_MQTT_URL="$$mqtt_url"
+
+simulator-deploy-prod:
+	@set -eu; \
+	if [ -f .env.prod ]; then set -a; . ./.env.prod; set +a; fi; \
+	project="$${GCP_SIMULATOR_PROJECT_ID:-$(GCP_SIMULATOR_PROD_PROJECT)}"; \
+	mqtt_url="$${SIMULATOR_MQTT_URL:-}"; \
+	test -n "$$mqtt_url" || { echo "SIMULATOR_MQTT_URL is required in .env.prod or the environment" >&2; exit 1; }; \
+	$(MAKE) simulator-deploy GCP_ENV=prod GCP_PROJECT="$$project" GCP_SIMULATOR_PROJECT="$$project" SIMULATOR_MQTT_URL="$$mqtt_url"
+
+simulator-start:
+	@for robot_id in robot-01 robot-02 robot-03; do \
+		gcloud run services update "robot-fleet-$(GCP_ENV)-$$robot_id" --region "$(GCP_REGION)" --project "$(GCP_SIMULATOR_PROJECT)" --min 1 --max 1 --quiet; \
+	done
+
+simulator-stop:
+	@for robot_id in robot-01 robot-02 robot-03; do \
+		gcloud run services update "robot-fleet-$(GCP_ENV)-$$robot_id" --region "$(GCP_REGION)" --project "$(GCP_SIMULATOR_PROJECT)" --min 0 --max 1 --quiet; \
+	done
+
+simulator-start-test:
+	$(MAKE) simulator-start GCP_ENV=test GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_TEST_PROJECT)"
+
+simulator-stop-test:
+	$(MAKE) simulator-stop GCP_ENV=test GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_TEST_PROJECT)"
+
+simulator-start-prod:
+	$(MAKE) simulator-start GCP_ENV=prod GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_PROD_PROJECT)"
+
+simulator-stop-prod:
+	$(MAKE) simulator-stop GCP_ENV=prod GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_PROD_PROJECT)"
+
+simulator-github-auth:
+	@GCP_PROJECT_ID="$${GCP_SIMULATOR_PROJECT_ID:-$(GCP_SIMULATOR_PROJECT)}" \
+	REPO="$${REPO:-$(REPO)}" \
+	GCP_WIF_POOL_ID="$${GCP_SIMULATOR_WIF_POOL_ID:-github}" \
+	GCP_WIF_PROVIDER_ID="$${GCP_SIMULATOR_WIF_PROVIDER_ID:-github}" \
+	GCP_DEPLOY_SERVICE_ACCOUNT_ID="$${GCP_SIMULATOR_DEPLOY_SERVICE_ACCOUNT_ID:-github-simulator-deployer}" \
+	GITHUB_WIF_PROVIDER_SECRET=GCP_SIMULATOR_WORKLOAD_IDENTITY_PROVIDER \
+	GITHUB_DEPLOY_SERVICE_ACCOUNT_SECRET=GCP_SIMULATOR_DEPLOY_SERVICE_ACCOUNT \
+		scripts/cloud-github-auth.sh
+
+simulator-github-auth-test:
+	@set -a; [ ! -f .env.test ] || . ./.env.test; set +a; \
+	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_TEST_PROJECT)"
+
+simulator-github-auth-prod:
+	@set -a; [ ! -f .env.prod ] || . ./.env.prod; set +a; \
+	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_PROD_PROJECT)"

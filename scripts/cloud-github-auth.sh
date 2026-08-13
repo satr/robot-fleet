@@ -7,6 +7,8 @@ repo="${REPO:?REPO is required}"
 pool_id="${GCP_WIF_POOL_ID:-github}"
 provider_id="${GCP_WIF_PROVIDER_ID:-github}"
 service_account_id="${GCP_DEPLOY_SERVICE_ACCOUNT_ID:-github-deployer}"
+provider_secret="${GITHUB_WIF_PROVIDER_SECRET:-GCP_WORKLOAD_IDENTITY_PROVIDER}"
+service_account_secret="${GITHUB_DEPLOY_SERVICE_ACCOUNT_SECRET:-GCP_DEPLOY_SERVICE_ACCOUNT}"
 
 project_number="$(gcloud projects describe "$project" --format='value(projectNumber)')"
 service_account="${service_account_id}@${project}.iam.gserviceaccount.com"
@@ -69,6 +71,6 @@ for role in \
 done
 
 provider="projects/${project_number}/locations/global/workloadIdentityPools/${pool_id}/providers/${provider_id}"
-printf '%s' "$provider" | gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$repo"
-printf '%s' "$service_account" | gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --repo "$repo"
+printf '%s' "$provider" | gh secret set "$provider_secret" --repo "$repo"
+printf '%s' "$service_account" | gh secret set "$service_account_secret" --repo "$repo"
 echo "Configured GitHub OIDC auth for $project in $repo"
