@@ -22,6 +22,28 @@ if [ -n "$billing_account" ]; then
   gcloud billing projects link "$project" --billing-account="$billing_account" --quiet
 fi
 
+deployer_account="$(gcloud config get-value account 2>/dev/null)"
+case "$deployer_account" in
+  *@*.gserviceaccount.com) deployer_member="serviceAccount:${deployer_account}" ;;
+  *@*) deployer_member="user:${deployer_account}" ;;
+  *)
+    echo "Unable to determine the active gcloud account" >&2
+    exit 1
+    ;;
+esac
+
+for role in \
+  roles/artifactregistry.admin \
+  roles/cloudbuild.builds.editor \
+  roles/iam.serviceAccountUser \
+  roles/run.admin \
+  roles/serviceusage.serviceUsageAdmin; do
+  gcloud projects add-iam-policy-binding "$project" \
+    --member="$deployer_member" \
+    --role="$role" \
+    --quiet >/dev/null
+done
+
 gcloud auth print-access-token >/dev/null
 gcloud services enable \
   cloudbuild.googleapis.com \
@@ -55,8 +77,8 @@ for robot in \
     --project="$project" \
     --platform=managed \
     --port=8080 \
-    --min=1 \
-    --max=1 \
+    --min-instances=1 \
+    --max-instances=1 \
     --cpu=1 \
     --memory=512Mi \
     --no-cpu-throttling \
