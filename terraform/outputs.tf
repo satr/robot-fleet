@@ -9,3 +9,7 @@ output "backend_url" {
 output "web_url" {
   value = try(module.google[0].web_url, null)
 }
+
+output "mqtt_url" {
+  value = try(module.google[0].mqtt_url, null)
+}

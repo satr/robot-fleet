@@ -61,7 +61,8 @@ async fn mqtt_websocket(upgrade: WebSocketUpgrade) -> impl IntoResponse {
 }
 
 async fn proxy_mqtt_websocket(client: WebSocket) {
-    let Ok((broker, _)) = connect_async("ws://127.0.0.1:9001").await else {
+    let broker_url = std::env::var("MQTT_WS_URL").unwrap_or_else(|_| "ws://127.0.0.1:9001".into());
+    let Ok((broker, _)) = connect_async(broker_url).await else {
         return;
     };
     let (mut broker_sink, mut broker_stream) = broker.split();

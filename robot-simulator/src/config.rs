@@ -10,6 +10,8 @@ pub(crate) struct Config {
     pub(crate) robot_name: String,
     pub(crate) mqtt_client_id: String,
     pub(crate) mqtt_url: String,
+    pub(crate) mqtt_username: Option<String>,
+    pub(crate) mqtt_password: Option<String>,
     pub(crate) telemetry_interval: Duration,
     pub(crate) robot_state_interval: Duration,
     pub(crate) metrics_port: u16,
@@ -29,6 +31,8 @@ impl Config {
             robot_name: env_or("ROBOT_NAME", "Local Robot"),
             mqtt_client_id,
             mqtt_url: env_or("MQTT_URL", "mqtt://localhost:1883"),
+            mqtt_username: std::env::var("MQTT_USERNAME").ok(),
+            mqtt_password: std::env::var("MQTT_PASSWORD").ok(),
             telemetry_interval: Duration::from_secs(
                 env_or("TELEMETRY_INTERVAL_SECONDS", "5")
                     .parse()

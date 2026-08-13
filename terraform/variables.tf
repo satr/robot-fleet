@@ -31,7 +31,7 @@ variable "gcp_project_id" {
 
 variable "gcp_region" {
   type        = string
-  description = "Google Cloud region used for the Artifact Registry repository and Firestore database location."
+  description = "Google Cloud region used for Cloud Run and Artifact Registry."
   default     = "us-central1"
 }
 
@@ -42,6 +42,24 @@ variable "name_prefix" {
 
 variable "backend_image" { type = string }
 variable "web_image" { type = string }
+variable "mqtt_image" { type = string }
+variable "postgres_image" { type = string }
+variable "postgres_username" {
+  type      = string
+  sensitive = true
+}
+variable "postgres_password" {
+  type      = string
+  sensitive = true
+}
+variable "mqtt_username" {
+  type      = string
+  sensitive = true
+}
+variable "mqtt_password" {
+  type      = string
+  sensitive = true
+}
 variable "image_tag" {
   type        = string
   description = "Docker image tag used when backend_image and web_image are not explicitly set."

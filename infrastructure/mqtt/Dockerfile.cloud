@@ -1,0 +1,10 @@
+FROM eclipse-mosquitto:2
+
+COPY infrastructure/mqtt/mosquitto-cloud.conf /mosquitto/config/mosquitto.conf
+COPY infrastructure/mqtt/cloud-entrypoint.sh /usr/local/bin/mqtt-entrypoint
+
+RUN chmod +x /usr/local/bin/mqtt-entrypoint
+
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/mqtt-entrypoint"]

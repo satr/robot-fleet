@@ -1,18 +1,18 @@
 # Robot Fleet Terraform
 
-This deploys the test or production application to Google Cloud Run using
-Artifact Registry. Each environment has one public backend service and one
-public web service, both limited to one instance. The backend image also runs
-PostgreSQL and Mosquitto locally: PostgreSQL is ephemeral and is lost whenever
-the Cloud Run instance is replaced or scaled to zero. Mosquitto accepts TCP locally and WebSockets on `9001`; the backend proxies the
-latter at the service root, which gives external robot simulators a public
-`wss://<backend>` endpoint.
+This deploys the test or production application to Google Cloud using Artifact
+Registry and Cloud Run. Each environment has public backend, MQTT, and web
+services on Cloud Run. The backend Cloud Run service also runs the PostgreSQL
+container as a localhost sidecar, while MQTT is exposed through Mosquitto
+WebSockets.
 
 This is a testing deployment, not a secure production boundary. Authentication,
-authorization, certificates, and broker credentials are intentionally deferred.
-Do not send sensitive data to these public services. Cloud Run and Artifact
-Registry usage remains subject to quotas and billing; the deployment avoids
-Cloud SQL, VMs, VPC connectors, static IPs, Firestore, and Pub/Sub.
+authorization, and certificates are intentionally deferred. MQTT credentials
+and PostgreSQL credentials are stored in Secret Manager. PostgreSQL sidecar
+storage is ephemeral and is not suitable for durable production data. Do not
+send sensitive data to these public services. Cloud Run and Artifact Registry
+usage remains subject to quotas and billing; the deployment avoids Compute
+Engine, Cloud SQL, Firestore, and Pub/Sub.
 
 ## Prerequisites
 
@@ -31,6 +31,13 @@ billing account. Install `gcloud` and Terraform, and authenticate:
 ```sh
 cp .env.test.example .env.test
 make cloud-deploy-test
+```
+
+GitHub OIDC authentication and the required Google Cloud IAM roles are
+configured with:
+
+```sh
+make cloud-github-auth-test
 ```
 
 Copy the `ACCOUNT_ID` from `gcloud billing accounts list` into
@@ -54,7 +61,7 @@ make cloud-deploy-prod
 ```
 
 Robot simulators are deployed independently to their own project. Set
-`GCP_SIMULATOR_PROJECT_ID` and the backend WebSocket URL in the matching
+`GCP_SIMULATOR_PROJECT_ID` and the generated MQTT client URL in the matching
 `.env.test` or `.env.prod`, then run:
 
 ```sh
@@ -67,12 +74,13 @@ The simulator deployment builds one image and runs `robot-01`, `robot-02`, and
 `robot-03` as separate Cloud Run services. Use the corresponding `*-prod`
 targets for production.
 
-The deploy target builds both images with Cloud Build, pushes them to the
+The deploy target builds four images with Cloud Build, pushes them to the
 environment's Artifact Registry repository, and runs noninteractive Terraform.
 `make cloud-start-test`, `cloud-stop-test`, `cloud-start-prod`, and
 `cloud-stop-prod` restore or scale both services to zero. Override
 `GCP_TEST_PROJECT`, `GCP_PROD_PROJECT`, `GCP_REGION`, or `GCP_ENV` as needed.
-Never put passwords or certificates in Terraform variables or image layers.
+Never commit the local environment files containing passwords or certificates,
+and never put them in image layers. Terraform state must remain protected.
 
 ## Manual GitHub Actions deployment
 

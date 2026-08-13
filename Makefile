@@ -28,6 +28,8 @@ AR_HOST ?= $(GCP_REGION)-docker.pkg.dev
 IMAGE_TAG ?= run-$(shell date -u +%Y%m%d%H%M%S)-$(shell uuidgen | cut -d- -f1)
 BACKEND_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/backend:$(IMAGE_TAG)
 WEB_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/web:$(IMAGE_TAG)
+MQTT_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/mqtt:$(IMAGE_TAG)
+POSTGRES_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/postgres:$(IMAGE_TAG)
 SIMULATOR_IMAGE ?= $(AR_HOST)/$(GCP_SIMULATOR_PROJECT)/$(SIMULATOR_AR_REPOSITORY)/simulator:$(IMAGE_TAG)
 
 .PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs cloud-deploy cloud-deploy-test cloud-deploy-prod cloud-github-auth cloud-github-auth-test cloud-github-auth-prod cloud-start cloud-stop cloud-start-test cloud-stop-test cloud-start-prod cloud-stop-prod simulator-deploy simulator-deploy-test simulator-deploy-prod simulator-start simulator-stop simulator-start-test simulator-stop-test simulator-start-prod simulator-stop-prod simulator-github-auth simulator-github-auth-test simulator-github-auth-prod clean
@@ -171,6 +173,8 @@ test:
 docker-prereqs:
 	docker pull rust:1-bookworm
 	docker pull debian:bookworm-slim
+	docker pull timescale/timescaledb:latest-pg16
+	docker pull eclipse-mosquitto:2
 	docker pull node:22-bookworm-slim
 
 docker-build: docker-prereqs
@@ -196,6 +200,8 @@ cloud-deploy:
 	AR_REPOSITORY="$(AR_REPOSITORY)" \
 	BACKEND_IMAGE="$(BACKEND_IMAGE)" \
 	WEB_IMAGE="$(WEB_IMAGE)" \
+	MQTT_IMAGE="$(MQTT_IMAGE)" \
+	POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
 	IMAGE_TAG="$(IMAGE_TAG)" \
 		scripts/cloud-deploy.sh
 
@@ -231,10 +237,12 @@ cloud-github-auth-prod:
 
 cloud-start:
 	@gcloud run services update "robot-fleet-$(GCP_ENV)-backend" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 1 --max 1 --quiet
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-mqtt" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 1 --max 1 --quiet
 	@gcloud run services update "robot-fleet-$(GCP_ENV)-web" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 1 --max 1 --quiet
 
 cloud-stop:
 	@gcloud run services update "robot-fleet-$(GCP_ENV)-backend" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 0 --max 1 --quiet
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-mqtt" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 0 --max 1 --quiet
 	@gcloud run services update "robot-fleet-$(GCP_ENV)-web" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 0 --max 1 --quiet
 
 cloud-start-test:
@@ -257,6 +265,8 @@ simulator-deploy:
 	AR_REPOSITORY="$(SIMULATOR_AR_REPOSITORY)" \
 	SIMULATOR_IMAGE="$(SIMULATOR_IMAGE)" \
 	SIMULATOR_MQTT_URL="$(SIMULATOR_MQTT_URL)" \
+	MQTT_USERNAME="$(MQTT_USERNAME)" \
+	MQTT_PASSWORD="$(MQTT_PASSWORD)" \
 		./scripts/simulator-deploy.sh
 
 simulator-deploy-test:

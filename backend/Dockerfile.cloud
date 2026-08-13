@@ -8,14 +8,11 @@ RUN cargo build --release -p robot-fleet-backend
 
 FROM debian:bookworm-slim
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl mosquitto postgresql \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=builder /app/target/release/robot-fleet-backend /usr/local/bin/robot-fleet-backend
 COPY backend/migrations ./migrations
-COPY infrastructure/mqtt/mosquitto-cloud.conf /etc/mosquitto/mosquitto.conf
-COPY infrastructure/cloud/backend-entrypoint.sh /usr/local/bin/backend-entrypoint
-RUN chmod +x /usr/local/bin/backend-entrypoint
 ENV HTTP_PORT=8080
 EXPOSE 8080
-CMD ["backend-entrypoint"]
+CMD ["robot-fleet-backend"]

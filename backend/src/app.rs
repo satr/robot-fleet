@@ -14,6 +14,8 @@ use crate::{db, metrics::Metrics, mqtt, routes};
 pub(crate) struct Config {
     pub(crate) database_url: String,
     pub(crate) mqtt_url: String,
+    pub(crate) mqtt_username: String,
+    pub(crate) mqtt_password: String,
     pub(crate) http_port: u16,
 }
 
@@ -27,12 +29,22 @@ pub(crate) struct AppState {
 
 impl Config {
     pub(crate) fn from_env() -> anyhow::Result<Self> {
+        let database_url = match std::env::var("DATABASE_URL") {
+            Ok(value) if !value.trim().is_empty() => value,
+            _ => {
+                let user = env_or("POSTGRES_USER", "robot_fleet");
+                let password = env_or("POSTGRES_PASSWORD", "robot_fleet");
+                let host = env_or("POSTGRES_HOST", "localhost");
+                let port = env_or("POSTGRES_PORT", "5432");
+                let database = env_or("POSTGRES_DB", "robot_fleet");
+                format!("postgres://{user}:{password}@{host}:{port}/{database}")
+            }
+        };
         Ok(Self {
-            database_url: env_or(
-                "DATABASE_URL",
-                "postgres://robot_fleet:robot_fleet@localhost:5432/robot_fleet",
-            ),
+            database_url,
             mqtt_url: env_or("MQTT_URL", "mqtt://localhost:1883"),
+            mqtt_username: env_or("MQTT_USERNAME", ""),
+            mqtt_password: env_or("MQTT_PASSWORD", ""),
             http_port: env_or("HTTP_PORT", "8089")
                 .parse()
                 .context("HTTP_PORT must be a port")?,
@@ -45,8 +57,13 @@ pub(crate) async fn run_with_config(config: Config) -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
 
     let metrics = Arc::new(Metrics::new()?);
-    let (mqtt_client, eventloop) =
-        mqtt::connect_mqtt(&config.mqtt_url, "robot-fleet-backend").await?;
+    let (mqtt_client, eventloop) = mqtt::connect_mqtt(
+        &config.mqtt_url,
+        "robot-fleet-backend",
+        &config.mqtt_username,
+        &config.mqtt_password,
+    )
+    .await?;
     let (robot_events, _) = broadcast::channel(100);
     let state = AppState {
         pool,
