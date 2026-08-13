@@ -353,8 +353,18 @@ simulator-github-auth:
 
 simulator-github-auth-test:
 	@set -a; [ ! -f .env.test ] || . ./.env.test; set +a; \
-	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_TEST_PROJECT)" GITHUB_PROJECT_VARIABLE=GCP_SIMULATOR_TEST_PROJECT GITHUB_MQTT_URL_VARIABLE=SIMULATOR_MQTT_URL_TEST
+	mqtt_url="$${SIMULATOR_MQTT_URL:-}"; \
+	if [ -z "$$mqtt_url" ]; then \
+		mqtt_url="$$(gcloud run services describe robot-fleet-test-mqtt --region "$(GCP_REGION)" --project "$${GCP_PROJECT_ID}" --format='value(status.url)' 2>/dev/null | sed 's#^https://#wss://#')"; \
+	fi; \
+	test -n "$$mqtt_url" || { echo "SIMULATOR_MQTT_URL is required in .env.test or from robot-fleet-test-mqtt" >&2; exit 1; }; \
+	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_TEST_PROJECT)" SIMULATOR_MQTT_URL="$$mqtt_url" GITHUB_PROJECT_VARIABLE=GCP_SIMULATOR_TEST_PROJECT GITHUB_MQTT_URL_VARIABLE=SIMULATOR_MQTT_URL_TEST
 
 simulator-github-auth-prod:
 	@set -a; [ ! -f .env.prod ] || . ./.env.prod; set +a; \
-	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_PROD_PROJECT)" GITHUB_PROJECT_VARIABLE=GCP_SIMULATOR_PROD_PROJECT GITHUB_MQTT_URL_VARIABLE=SIMULATOR_MQTT_URL_PROD
+	mqtt_url="$${SIMULATOR_MQTT_URL:-}"; \
+	if [ -z "$$mqtt_url" ]; then \
+		mqtt_url="$$(gcloud run services describe robot-fleet-prod-mqtt --region "$(GCP_REGION)" --project "$${GCP_PROJECT_ID}" --format='value(status.url)' 2>/dev/null | sed 's#^https://#wss://#')"; \
+	fi; \
+	test -n "$$mqtt_url" || { echo "SIMULATOR_MQTT_URL is required in .env.prod or from robot-fleet-prod-mqtt" >&2; exit 1; }; \
+	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_PROD_PROJECT)" SIMULATOR_MQTT_URL="$$mqtt_url" GITHUB_PROJECT_VARIABLE=GCP_SIMULATOR_PROD_PROJECT GITHUB_MQTT_URL_VARIABLE=SIMULATOR_MQTT_URL_PROD
