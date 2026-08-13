@@ -55,16 +55,68 @@ This shows a later production path, not the current implementation. Observabilit
 ### Local and Cloud Run modes
 
 Local development remains available through `make dev` or `make docker-up`;
-local Mosquitto supports TCP on `1883` and WebSockets on `9001`. The
-free-tier-oriented Cloud Run test deployment uses one combined backend image
-that runs PostgreSQL and Mosquitto in the same ephemeral instance. The backend
-serves HTTP and proxies public MQTT-over-WebSockets at its root endpoint, so
-remote simulators use `MQTT_URL=wss://<backend-service-url>`. `make
-cloud-deploy-test` and `make cloud-deploy-prod` use separate projects; see
-[`terraform/README.md`](terraform/README.md) and its
-[deployment prerequisites](terraform/PREREQUISITES.md). This mode intentionally
-has no authentication and loses database state on instance replacement or
-scale-to-zero.
+local Mosquitto supports TCP on `1883` and WebSockets on `9001`. PostgreSQL
+and Mosquitto are separate custom images under `infrastructure/`; the cloud
+deployment builds and publishes both images. Cloud Run deploys the web app,
+backend, and a public MQTT-over-WebSockets service. PostgreSQL runs as a
+second container in the backend Cloud Run instance and is reachable there as
+`127.0.0.1:5432`. Remote simulators connect to MQTT over `wss://` with
+credentials injected from Secret Manager. This cloud topology is intended for
+testing: the PostgreSQL sidecar has ephemeral storage, and MQTT connections
+must reconnect when Cloud Run recycles an instance.
+
+### Google Cloud infrastructure
+
+The cloud deployment is defined as separate `test` and `prod` Terraform
+environments. Each environment uses its own GCS state bucket and resource name
+prefix (`robot-fleet-test` or `robot-fleet-prod`). The Google module currently
+provisions the following topology:
+
+```mermaid
+flowchart TB
+    GitHub[GitHub Actions<br/>OIDC] --> CloudBuild[Cloud Build]
+    CloudBuild --> Registry[(Artifact Registry<br/>backend / web / mqtt / postgres)]
+    Registry --> Backend[Cloud Run service<br/>backend container]
+    Registry --> PostgresImage[PostgreSQL / TimescaleDB image]
+    PostgresImage --> Postgres[Cloud Run sidecar<br/>PostgreSQL / TimescaleDB]
+    Registry --> Web[Cloud Run<br/>web]
+    Registry --> MQTT[Cloud Run<br/>Mosquitto WebSockets]
+
+    Web -->|REST + WebSocket| Backend
+    Backend -->|localhost:5432| Postgres
+    Backend -->|authenticated WSS| MQTT
+    Simulators[Robot simulators<br/>Cloud Run] -->|public WSS + credentials| MQTT
+    Secrets[Secret Manager] -->|PostgreSQL credentials| Backend
+    Secrets -->|PostgreSQL credentials| Postgres
+    Secrets -->|MQTT credentials| Backend
+    Secrets -->|MQTT credentials| MQTT
+    SimulatorSecrets[Simulator project<br/>Secret Manager] -->|MQTT credentials| Simulators
+```
+
+Terraform enables the required Google APIs, creates the regional Artifact
+Registry repository, runtime service account, IAM bindings, and Secret
+Manager secrets. It then manages three public Cloud Run services: the SvelteKit
+web app, the Rust backend with its PostgreSQL sidecar, and Mosquitto with
+MQTT-over-WebSockets. The backend connects to its PostgreSQL sidecar over
+localhost. The MQTT service is public so robot simulators can connect; the
+backend uses the same authenticated WSS endpoint. Database and MQTT
+credentials are supplied to containers from Secret Manager rather than
+hard-coded values.
+
+The deployment scripts build and push the backend, web, MQTT, and PostgreSQL
+images with Cloud Build before running Terraform. Simulator deployment creates
+MQTT credential secrets in the simulator project and injects them into each
+simulator Cloud Run service. GitHub Actions authenticates without a long-lived
+key through GitHub OIDC and the configured
+`GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_DEPLOY_SERVICE_ACCOUNT` secrets.
+`make cloud-deploy-test` and `make cloud-deploy-prod` select the corresponding
+environment; `make cloud-start-*` and `make cloud-stop-*` scale the Cloud Run
+services between one and zero instances.
+
+This is intentionally a small demonstration topology: Cloud Run services are
+public, PostgreSQL is an ephemeral sidecar with one maximum backend instance,
+and authentication, authorization, durable database storage, backups,
+failover, and high-availability database operations are not implemented.
 
 ## Command lifecycle
 

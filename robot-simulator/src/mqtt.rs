@@ -4,7 +4,7 @@ use anyhow::anyhow;
 use chrono::Utc;
 use rand::Rng;
 use robot_fleet_common::{
-    mqtt::mqtt_options,
+    mqtt::mqtt_options_with_credentials,
     types::{
         CommandResultMessage, RobotCommandMessage, RobotSensorEventMessage, StateMessage,
         TelemetryMessage,
@@ -139,7 +139,12 @@ pub(crate) async fn run_robot(
 }
 
 fn connect_mqtt(config: &Config) -> anyhow::Result<(AsyncClient, rumqttc::EventLoop)> {
-    let mut options = mqtt_options(&config.mqtt_url, &config.mqtt_client_id)?;
+    let mut options = mqtt_options_with_credentials(
+        &config.mqtt_url,
+        &config.mqtt_client_id,
+        config.mqtt_username.as_deref(),
+        config.mqtt_password.as_deref(),
+    )?;
     options.set_keep_alive(Duration::from_secs(10));
     Ok(AsyncClient::new(options, 100))
 }
@@ -1486,6 +1491,8 @@ mod tests {
             robot_name: "Robot 01".into(),
             mqtt_client_id: "robot-01".into(),
             mqtt_url: "mqtt://localhost:1883".into(),
+            mqtt_username: None,
+            mqtt_password: None,
             telemetry_interval: Duration::from_secs(1),
             robot_state_interval: Duration::from_secs(1),
             metrics_port: 9100,

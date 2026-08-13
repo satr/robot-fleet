@@ -7,14 +7,20 @@ module "google" {
   source = "./modules/google"
   count  = var.cloud_vendor == "google" ? 1 : 0
 
-  environment   = var.environment
-  project_id    = var.gcp_project_id
-  region        = var.gcp_region
-  name_prefix   = var.name_prefix
-  backend_image = var.backend_image
-  web_image     = var.web_image
-  image_tag     = var.image_tag
-  min_instances = var.min_instances
+  environment       = var.environment
+  project_id        = var.gcp_project_id
+  region            = var.gcp_region
+  name_prefix       = var.name_prefix
+  backend_image     = var.backend_image
+  web_image         = var.web_image
+  mqtt_image        = var.mqtt_image
+  postgres_image    = var.postgres_image
+  postgres_username = var.postgres_username
+  postgres_password = var.postgres_password
+  mqtt_username     = var.mqtt_username
+  mqtt_password     = var.mqtt_password
+  image_tag         = var.image_tag
+  min_instances     = var.min_instances
 }
 
 resource "terraform_data" "unsupported_vendor" {

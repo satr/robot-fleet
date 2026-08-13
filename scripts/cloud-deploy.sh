@@ -8,6 +8,12 @@ region="${GCP_REGION:?GCP_REGION is required}"
 repository="${AR_REPOSITORY:?AR_REPOSITORY is required}"
 backend_image="${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
 web_image="${WEB_IMAGE:?WEB_IMAGE is required}"
+mqtt_image="${MQTT_IMAGE:?MQTT_IMAGE is required}"
+postgres_image="${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}"
+postgres_username="${POSTGRES_USERNAME:?POSTGRES_USERNAME is required}"
+postgres_password="${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+mqtt_username="${MQTT_USERNAME:?MQTT_USERNAME is required}"
+mqtt_password="${MQTT_PASSWORD:?MQTT_PASSWORD is required}"
 image_tag="${IMAGE_TAG:?IMAGE_TAG is required}"
 billing_account="${GCP_BILLING_ACCOUNT:-}"
 state_bucket="$(awk -F '"' '/^[[:space:]]*bucket[[:space:]]*=/{print $2}' "terraform/${env_name}.backend")"
@@ -23,7 +29,8 @@ if [ "$describe_status" -ne 0 ]; then
       sed -n 's/.*project \([0-9][0-9]*\) before or it is disabled.*/\1/p' |
       head -n 1
   )"
-  if printf '%s\n' "$describe_output" | grep -q 'reason: SERVICE_DISABLED' &&
+  if printf '%s\n' "$describe_output" |
+    grep -Eq 'reason: SERVICE_DISABLED|has not been used in project .* before or it is disabled' &&
     [ -n "$resource_manager_project" ]; then
     echo "Enabling Cloud Resource Manager API in project $resource_manager_project..." >&2
     gcloud services enable cloudresourcemanager.googleapis.com \
@@ -57,7 +64,9 @@ fi
 gcloud services enable \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
+  secretmanager.googleapis.com \
   run.googleapis.com \
+  vpcaccess.googleapis.com \
   --project "$project" --quiet
 
 gcloud storage buckets describe "gs://${state_bucket}" --project "$project" >/dev/null 2>&1 ||
@@ -94,12 +103,26 @@ gcloud builds submit . \
   --config=infrastructure/cloud/cloudbuild.yaml \
   --substitutions="_DOCKERFILE=web-app/Dockerfile,_IMAGE=${web_image}" \
   --project="$project" --quiet
+gcloud builds submit . \
+  --config=infrastructure/cloud/cloudbuild.yaml \
+  --substitutions="_DOCKERFILE=infrastructure/mqtt/Dockerfile.cloud,_IMAGE=${mqtt_image}" \
+  --project="$project" --quiet
+gcloud builds submit . \
+  --config=infrastructure/cloud/cloudbuild.yaml \
+  --substitutions="_DOCKERFILE=infrastructure/postgres/Dockerfile,_IMAGE=${postgres_image}" \
+  --project="$project" --quiet
 
 terraform_env=(
   "TF_VAR_gcp_project_id=$project"
   "TF_VAR_gcp_region=$region"
   "TF_VAR_backend_image=$backend_image"
   "TF_VAR_web_image=$web_image"
+  "TF_VAR_mqtt_image=$mqtt_image"
+  "TF_VAR_postgres_image=$postgres_image"
+  "TF_VAR_postgres_username=$postgres_username"
+  "TF_VAR_postgres_password=$postgres_password"
+  "TF_VAR_mqtt_username=$mqtt_username"
+  "TF_VAR_mqtt_password=$mqtt_password"
   "TF_VAR_image_tag=$image_tag"
 )
 

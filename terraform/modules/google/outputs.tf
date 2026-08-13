@@ -9,3 +9,7 @@ output "backend_url" {
 output "web_url" {
   value = google_cloud_run_v2_service.web.uri
 }
+
+output "mqtt_url" {
+  value = google_cloud_run_v2_service.mqtt.uri
+}

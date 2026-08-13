@@ -1,6 +1,8 @@
 services:
   postgres-timescaledb:
-    image: timescale/timescaledb:latest-pg16
+    build:
+      context: .
+      dockerfile: infrastructure/postgres/Dockerfile
     container_name: robot-fleet-postgres
     restart: unless-stopped
     environment:
@@ -19,14 +21,15 @@ services:
       retries: 20
 
   mqtt:
-    image: eclipse-mosquitto:2
+    build:
+      context: .
+      dockerfile: infrastructure/mqtt/Dockerfile
     container_name: robot-fleet-mqtt
     restart: unless-stopped
     ports:
       - "1883:1883"
       - "9001:9001"
     volumes:
-      - ./infrastructure/mqtt/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - ./data/mqtt:/mosquitto/data
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_sub -h localhost -t '$$SYS/#' -C 1 -W 3 >/dev/null 2>&1 || exit 1"]
@@ -41,8 +44,9 @@ services:
     container_name: robot-fleet-backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgres://robot_fleet:robot_fleet@postgres-timescaledb:5432/robot_fleet
+      DATABASE_URL: postgres://${POSTGRES_USER:-robot_fleet}:${POSTGRES_PASSWORD:-robot_fleet}@postgres-timescaledb:5432/${POSTGRES_DB:-robot_fleet}
       MQTT_URL: mqtt://mqtt:1883
+      MQTT_WS_URL: ws://mqtt:9001
       RUST_LOG: ${RUST_LOG:-info}
       HTTP_PORT: 8089
     ports:

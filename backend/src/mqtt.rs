@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use robot_fleet_common::{
-    mqtt::mqtt_options,
+    mqtt::mqtt_options_with_credentials,
     types::{
         CommandResultMessage, RobotSensorEventMessage, RobotStreamMessage, StateMessage,
         TelemetryMessage,
@@ -17,8 +17,15 @@ use crate::{app, app::AppState, db};
 pub(crate) async fn connect_mqtt(
     url: &str,
     client_id: &str,
+    username: &str,
+    password: &str,
 ) -> anyhow::Result<(AsyncClient, rumqttc::EventLoop)> {
-    let mut options = mqtt_options(url, client_id)?;
+    let mut options = mqtt_options_with_credentials(
+        url,
+        client_id,
+        (!username.is_empty()).then_some(username),
+        (!password.is_empty()).then_some(password),
+    )?;
     options.set_keep_alive(Duration::from_secs(10));
     Ok(AsyncClient::new(options, 10))
 }
