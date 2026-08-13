@@ -103,7 +103,7 @@ fi
 gcloud builds submit . \
   --config=infrastructure/cloud/cloudbuild.yaml \
   --substitutions="_DOCKERFILE=robot-simulator/Dockerfile,_IMAGE=${simulator_image}" \
-  --project="$project" --quiet
+  --project="$project" --quiet --suppress-logs
 
 for robot in \
   "robot-01:Loader One" \

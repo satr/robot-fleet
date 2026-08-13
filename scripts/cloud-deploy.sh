@@ -115,19 +115,19 @@ fi
 gcloud builds submit . \
   --config=infrastructure/cloud/cloudbuild.yaml \
   --substitutions="_DOCKERFILE=backend/Dockerfile.cloud,_IMAGE=${backend_image}" \
-  --project="$project" --quiet
+  --project="$project" --quiet --suppress-logs
 gcloud builds submit . \
   --config=infrastructure/cloud/cloudbuild.yaml \
   --substitutions="_DOCKERFILE=web-app/Dockerfile,_IMAGE=${web_image}" \
-  --project="$project" --quiet
+  --project="$project" --quiet --suppress-logs
 gcloud builds submit . \
   --config=infrastructure/cloud/cloudbuild.yaml \
   --substitutions="_DOCKERFILE=infrastructure/mqtt/Dockerfile.cloud,_IMAGE=${mqtt_image}" \
-  --project="$project" --quiet
+  --project="$project" --quiet --suppress-logs
 gcloud builds submit . \
   --config=infrastructure/cloud/cloudbuild.yaml \
   --substitutions="_DOCKERFILE=infrastructure/postgres/Dockerfile,_IMAGE=${postgres_image}" \
-  --project="$project" --quiet
+  --project="$project" --quiet --suppress-logs
 
 terraform_env=(
   "TF_VAR_gcp_project_id=$project"
