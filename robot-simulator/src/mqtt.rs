@@ -27,6 +27,12 @@ use crate::{
 
 const STARTUP_RECOVERY_REASON: &str = "simulator_restarted_before_completion";
 
+enum CompletedTask {
+    Eventloop,
+    Telemetry,
+    State,
+}
+
 pub(crate) async fn run_robot(
     config: Config,
     state: Arc<Mutex<RobotState>>,
@@ -81,13 +87,14 @@ pub(crate) async fn run_robot(
             run_state_publisher(state_client, state_config, state_state).await
         });
 
-        tokio::select! {
+        let completed_task = tokio::select! {
             eventloop_result = &mut eventloop_task => {
                 match eventloop_result {
                     Ok(Ok(())) => warn!(robot_id = config.robot_id, "MQTT event loop ended; reconnecting"),
                     Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "MQTT disconnected; reconnecting"),
                     Err(err) => warn!(robot_id = config.robot_id, error = %err, "MQTT task failed; reconnecting"),
                 }
+                CompletedTask::Eventloop
             }
             telemetry_result = &mut telemetry_task => {
                 match telemetry_result {
@@ -95,6 +102,7 @@ pub(crate) async fn run_robot(
                     Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "telemetry publisher failed; reconnecting"),
                     Err(err) => warn!(robot_id = config.robot_id, error = %err, "telemetry task failed; reconnecting"),
                 }
+                CompletedTask::Telemetry
             }
             state_result = &mut state_task => {
                 match state_result {
@@ -102,15 +110,30 @@ pub(crate) async fn run_robot(
                     Ok(Err(err)) => warn!(robot_id = config.robot_id, error = %err, "state publisher failed; reconnecting"),
                     Err(err) => warn!(robot_id = config.robot_id, error = %err, "state task failed; reconnecting"),
                 }
+                CompletedTask::State
+            }
+        };
+
+        match completed_task {
+            CompletedTask::Eventloop => {
+                telemetry_task.abort();
+                state_task.abort();
+                let _ = telemetry_task.await;
+                let _ = state_task.await;
+            }
+            CompletedTask::Telemetry => {
+                eventloop_task.abort();
+                state_task.abort();
+                let _ = eventloop_task.await;
+                let _ = state_task.await;
+            }
+            CompletedTask::State => {
+                eventloop_task.abort();
+                telemetry_task.abort();
+                let _ = eventloop_task.await;
+                let _ = telemetry_task.await;
             }
         }
-
-        eventloop_task.abort();
-        telemetry_task.abort();
-        state_task.abort();
-        let _ = eventloop_task.await;
-        let _ = telemetry_task.await;
-        let _ = state_task.await;
         sleep(Duration::from_secs(2)).await;
     }
 }
