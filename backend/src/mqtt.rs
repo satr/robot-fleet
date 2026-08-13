@@ -2,13 +2,13 @@ use std::time::Duration;
 
 use chrono::Utc;
 use robot_fleet_common::{
-    mqtt::parse_mqtt_url,
+    mqtt::mqtt_options,
     types::{
         CommandResultMessage, RobotSensorEventMessage, RobotStreamMessage, StateMessage,
         TelemetryMessage,
     },
 };
-use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
+use rumqttc::{AsyncClient, Event, Incoming, QoS};
 use tokio::time::sleep;
 use tracing::{error, warn};
 
@@ -18,8 +18,7 @@ pub(crate) async fn connect_mqtt(
     url: &str,
     client_id: &str,
 ) -> anyhow::Result<(AsyncClient, rumqttc::EventLoop)> {
-    let (host, port) = parse_mqtt_url(url)?;
-    let mut options = MqttOptions::new(client_id, host, port);
+    let mut options = mqtt_options(url, client_id)?;
     options.set_keep_alive(Duration::from_secs(10));
     Ok(AsyncClient::new(options, 10))
 }

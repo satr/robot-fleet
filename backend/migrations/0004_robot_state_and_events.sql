@@ -15,7 +15,17 @@ CREATE TABLE IF NOT EXISTS robot_state_history (
     PRIMARY KEY (robot_id, recorded_at)
 );
 
-SELECT create_hypertable('robot_state_history', 'recorded_at', if_not_exists => TRUE);
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_extension
+        WHERE extname = 'timescaledb'
+    ) THEN
+        PERFORM create_hypertable('robot_state_history', 'recorded_at', if_not_exists => TRUE);
+    END IF;
+END
+$$;
 
 CREATE TABLE IF NOT EXISTS robot_sensor_events (
     event_id UUID NOT NULL,
@@ -28,7 +38,17 @@ CREATE TABLE IF NOT EXISTS robot_sensor_events (
     PRIMARY KEY (event_id, occurred_at)
 );
 
-SELECT create_hypertable('robot_sensor_events', 'occurred_at', if_not_exists => TRUE);
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM pg_extension
+        WHERE extname = 'timescaledb'
+    ) THEN
+        PERFORM create_hypertable('robot_sensor_events', 'occurred_at', if_not_exists => TRUE);
+    END IF;
+END
+$$;
 
 CREATE INDEX IF NOT EXISTS robot_sensor_events_robot_id_occurred_at_idx
     ON robot_sensor_events(robot_id, occurred_at DESC);

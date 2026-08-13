@@ -1,0 +1,96 @@
+name: Cloud deployment
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment operation
+        required: true
+        type: choice
+        options:
+          - deploy-test
+          - deploy-prod
+          - start-test
+          - stop-test
+          - start-prod
+          - stop-prod
+      image_tag:
+        description: Docker image tag used for deployment
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  cloud:
+    runs-on: ubuntu-latest
+    env:
+      GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      GCP_TEST_PROJECT: ${{ vars.GCP_TEST_PROJECT }}
+      GCP_PROD_PROJECT: ${{ vars.GCP_PROD_PROJECT }}
+      GCP_BILLING_ACCOUNT: ${{ secrets.GCP_BILLING_ACCOUNT }}
+      IMAGE_TAG: ${{ inputs.image_tag }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Run selected operation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ inputs.target }}" in
+            *-test)
+              test -n "${GCP_TEST_PROJECT}" || {
+                echo "Repository variable GCP_TEST_PROJECT is required" >&2
+                exit 1
+              }
+              ;;
+            *-prod)
+              test -n "${GCP_PROD_PROJECT}" || {
+                echo "Repository variable GCP_PROD_PROJECT is required" >&2
+                exit 1
+              }
+              ;;
+          esac
+
+          case "${{ inputs.target }}" in
+            deploy-test)
+              make cloud-deploy-test
+              ;;
+            deploy-prod)
+              make cloud-deploy-prod
+              ;;
+            start-test)
+              make cloud-start-test
+              ;;
+            stop-test)
+              make cloud-stop-test
+              ;;
+            start-prod)
+              make cloud-start-prod
+              ;;
+            stop-prod)
+              make cloud-stop-prod
+              ;;
+            *)
+              echo "Unsupported deployment target: ${{ inputs.target }}" >&2
+              exit 1
+              ;;
+          esac

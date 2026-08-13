@@ -1,0 +1,3 @@
+# Fill in a pre-created, globally unique GCS bucket before use.
+bucket = "robot-fleet-terraform-state-prod"
+prefix = "robot-fleet/prod"

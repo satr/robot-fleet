@@ -11,8 +11,20 @@ PROCESSED_COMMANDS_PATH ?= data/robots/$(ROBOT_ID)/processed_commands.json
 WEB_PORT ?= 5173
 PUBLIC_BACKEND_HTTP_URL ?= http://localhost:8089
 PUBLIC_BACKEND_WS_URL ?= ws://localhost:8089
+GCP_REGION ?= us-central1
+GCP_TEST_PROJECT ?= robot-fleet-test-00000000-0000-0000-0000-000000000001
+GCP_PROD_PROJECT ?= robot-fleet-prod-00000000-0000-0000-0000-000000000001
+GCP_ENV ?= test
+GCP_PROJECT ?= $(if $(filter prod,$(GCP_ENV)),$(GCP_PROD_PROJECT),$(GCP_TEST_PROJECT))
+GCP_BILLING_ACCOUNT ?=
+REPO ?= satr/robot-fleet
+AR_REPOSITORY ?= robot-fleet-$(GCP_ENV)-images
+AR_HOST ?= $(GCP_REGION)-docker.pkg.dev
+IMAGE_TAG ?= $(if $(TF_VAR_image_tag),$(TF_VAR_image_tag),latest)
+BACKEND_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/backend:$(IMAGE_TAG)
+WEB_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/web:$(IMAGE_TAG)
 
-.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs clean
+.PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs cloud-deploy cloud-deploy-test cloud-deploy-prod cloud-github-auth cloud-github-auth-test cloud-github-auth-prod cloud-start cloud-stop cloud-start-test cloud-stop-test cloud-start-prod cloud-stop-prod clean
 
 help:
 	@echo "Robot Fleet commands:"
@@ -41,6 +53,12 @@ help:
 	@echo "  make docker-up      Build and start the full platform"
 	@echo "  make docker-down    Stop the full platform"
 	@echo "  make docker-logs    Follow all Docker logs"
+	@echo "  make cloud-deploy-test  Build and deploy test to GCP_TEST_PROJECT"
+	@echo "  make cloud-deploy-prod  Build and deploy prod to GCP_PROD_PROJECT"
+	@echo "  make cloud-github-auth-test  Create test GitHub OIDC auth and set repository secrets"
+	@echo "  make cloud-github-auth-prod  Create prod GitHub OIDC auth and set repository secrets"
+	@echo "  make cloud-start GCP_ENV=test|prod  Restore one Cloud Run instance"
+	@echo "  make cloud-stop GCP_ENV=test|prod   Scale Cloud Run services to zero"
 	@echo "  make clean          Remove build artifacts"
 
 infra-up:
@@ -159,3 +177,142 @@ docker-logs:
 
 clean:
 	cargo clean
+
+cloud-deploy:
+	@set -eu; \
+	project="$(GCP_PROJECT)"; env_name="$(GCP_ENV)"; \
+	billing_account="$(GCP_BILLING_ACCOUNT)"; \
+	state_bucket="$$(awk -F '"' '/^[[:space:]]*bucket[[:space:]]*=/{print $$2}' "terraform/$$env_name.backend")"; \
+	test -n "$$state_bucket"; \
+	if ! gcloud projects describe "$$project" --format='value(projectId)' >/dev/null 2>&1; then \
+	  test -n "$$billing_account" || { \
+	    echo "GCP_BILLING_ACCOUNT is required to create project $$project" >&2; \
+	    exit 1; \
+	  }; \
+	  gcloud projects create "$$project" --name="Robot Fleet $$env_name" --quiet; \
+	fi; \
+	if [ -n "$$billing_account" ]; then \
+	  gcloud billing projects link "$$project" --billing-account="$$billing_account" --quiet; \
+	fi; \
+	gcloud config set project "$$project" --quiet; \
+	gcloud auth print-access-token >/dev/null; \
+	if [ -n "$${GOOGLE_GHA_CREDS_PATH:-}" ]; then \
+	  :; \
+	else \
+	  gcloud auth application-default print-access-token >/dev/null; \
+	  gcloud auth application-default set-quota-project "$$project" --quiet; \
+	fi; \
+	gcloud services enable cloudbuild.googleapis.com artifactregistry.googleapis.com run.googleapis.com --project "$$project" --quiet; \
+	gcloud storage buckets describe "gs://$$state_bucket" --project "$$project" >/dev/null 2>&1 || \
+	  gcloud storage buckets create "gs://$$state_bucket" --project "$$project" --location="$(GCP_REGION)" --uniform-bucket-level-access; \
+	if ! gcloud artifacts repositories describe "$(AR_REPOSITORY)" --location="$(GCP_REGION)" --project="$$project" >/dev/null 2>&1; then \
+	  created=0; \
+	  for attempt in 1 2 3 4 5; do \
+	    if gcloud artifacts repositories create "$(AR_REPOSITORY)" --repository-format=docker --location="$(GCP_REGION)" --project="$$project" --quiet; then \
+	      created=1; \
+	      break; \
+	    fi; \
+	    if [ "$$attempt" -lt 5 ]; then \
+	      echo "Artifact Registry is not ready yet; retrying ($$attempt/5)..." >&2; \
+	      sleep 10; \
+	    fi; \
+	  done; \
+	  test "$$created" -eq 1; \
+	fi; \
+	gcloud builds submit . --config=infrastructure/cloud/cloudbuild.yaml \
+	  --substitutions="_DOCKERFILE=backend/Dockerfile.cloud,_IMAGE=$(BACKEND_IMAGE)" \
+	  --project="$$project" --quiet; \
+	gcloud builds submit . --config=infrastructure/cloud/cloudbuild.yaml \
+	  --substitutions="_DOCKERFILE=web-app/Dockerfile,_IMAGE=$(WEB_IMAGE)" \
+	  --project="$$project" --quiet; \
+	TF_VAR_gcp_project_id="$$project" TF_VAR_gcp_region="$(GCP_REGION)" \
+	TF_VAR_backend_image="$(BACKEND_IMAGE)" TF_VAR_web_image="$(WEB_IMAGE)" TF_VAR_image_tag="$(IMAGE_TAG)" \
+	  terraform -chdir="terraform/environments/$$env_name" init -input=false -backend-config=../../"$$env_name".backend >/dev/null; \
+	if gcloud artifacts repositories describe "$(AR_REPOSITORY)" --location="$(GCP_REGION)" --project="$$project" >/dev/null 2>&1; then \
+	  TF_VAR_gcp_project_id="$$project" TF_VAR_gcp_region="$(GCP_REGION)" \
+	  terraform -chdir="terraform/environments/$$env_name" state show 'module.environment.module.google[0].google_artifact_registry_repository.images' >/dev/null 2>&1 || \
+	  terraform -chdir="terraform/environments/$$env_name" import -input=false \
+	    'module.environment.module.google[0].google_artifact_registry_repository.images' \
+	    "projects/$$project/locations/$(GCP_REGION)/repositories/$(AR_REPOSITORY)" >/dev/null; \
+	fi; \
+	TF_VAR_gcp_project_id="$$project" TF_VAR_gcp_region="$(GCP_REGION)" \
+	TF_VAR_backend_image="$(BACKEND_IMAGE)" TF_VAR_web_image="$(WEB_IMAGE)" TF_VAR_image_tag="$(IMAGE_TAG)" \
+	  terraform -chdir="terraform/environments/$$env_name" apply -auto-approve -input=false
+
+cloud-deploy-test:
+	@set -eu; \
+	if [ -f .env.test ]; then set -a; . ./.env.test; set +a; fi; \
+	project="$${GCP_PROJECT_ID:-$(GCP_TEST_PROJECT)}"; \
+	tag="$${TF_VAR_image_tag:-$(IMAGE_TAG)}"; \
+	$(MAKE) cloud-deploy GCP_ENV=test GCP_PROJECT="$$project" IMAGE_TAG="$$tag"
+
+cloud-deploy-prod:
+	@set -eu; \
+	if [ -f .env.prod ]; then set -a; . ./.env.prod; set +a; fi; \
+	project="$${GCP_PROJECT_ID:-$(GCP_PROD_PROJECT)}"; \
+	tag="$${TF_VAR_image_tag:-$(IMAGE_TAG)}"; \
+	$(MAKE) cloud-deploy GCP_ENV=prod GCP_PROJECT="$$project" IMAGE_TAG="$$tag"
+
+cloud-github-auth:
+	@set -eu; \
+	project="$${GCP_PROJECT_ID:-$(GCP_PROJECT)}"; \
+	repo="$${REPO:-$(REPO)}"; \
+	pool_id="$${GCP_WIF_POOL_ID:-github}"; \
+	provider_id="$${GCP_WIF_PROVIDER_ID:-github}"; \
+	service_account_id="$${GCP_DEPLOY_SERVICE_ACCOUNT_ID:-github-deployer}"; \
+	test -n "$$project" || { echo "GCP_PROJECT_ID is required" >&2; exit 1; }; \
+	test -n "$$repo" || { echo "REPO is required" >&2; exit 1; }; \
+	project_number="$$(gcloud projects describe "$$project" --format='value(projectNumber)')"; \
+	service_account="$$service_account_id@$$project.iam.gserviceaccount.com"; \
+	gcloud services enable iam.googleapis.com iamcredentials.googleapis.com sts.googleapis.com --project="$$project" --quiet; \
+	if ! gcloud iam workload-identity-pools describe "$$pool_id" --project="$$project" --location=global >/dev/null 2>&1; then \
+	  gcloud iam workload-identity-pools create "$$pool_id" --project="$$project" --location=global --display-name="GitHub Actions" --quiet; \
+	fi; \
+	if ! gcloud iam workload-identity-pools providers describe "$$provider_id" --project="$$project" --location=global --workload-identity-pool="$$pool_id" >/dev/null 2>&1; then \
+	  gcloud iam workload-identity-pools providers create-oidc "$$provider_id" \
+	    --project="$$project" --location=global --workload-identity-pool="$$pool_id" \
+	    --display-name="GitHub" --issuer-uri="https://token.actions.githubusercontent.com/" \
+	    --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner" \
+	    --attribute-condition="assertion.repository == '$$repo'" --quiet; \
+	fi; \
+	if ! gcloud iam service-accounts describe "$$service_account" --project="$$project" >/dev/null 2>&1; then \
+	  gcloud iam service-accounts create "$$service_account_id" --project="$$project" --display-name="GitHub Actions deployer" --quiet; \
+	fi; \
+	gcloud iam service-accounts add-iam-policy-binding "$$service_account" --project="$$project" \
+	  --role=roles/iam.workloadIdentityUser \
+	  --member="principalSet://iam.googleapis.com/projects/$$project_number/locations/global/workloadIdentityPools/$$pool_id/attribute.repository/$$repo" --quiet; \
+	for role in roles/cloudbuild.builds.editor roles/artifactregistry.admin roles/run.admin roles/storage.admin roles/serviceusage.serviceUsageAdmin roles/iam.serviceAccountUser; do \
+	  gcloud projects add-iam-policy-binding "$$project" --member="serviceAccount:$$service_account" --role="$$role" --quiet >/dev/null; \
+	done; \
+	provider="projects/$$project_number/locations/global/workloadIdentityPools/$$pool_id/providers/$$provider_id"; \
+	printf '%s' "$$provider" | gh secret set GCP_WORKLOAD_IDENTITY_PROVIDER --repo "$$repo"; \
+	printf '%s' "$$service_account" | gh secret set GCP_DEPLOY_SERVICE_ACCOUNT --repo "$$repo"; \
+	echo "Configured GitHub OIDC auth for $$project in $$repo"
+
+cloud-github-auth-test:
+	@set -a; [ ! -f .env.test ] || . ./.env.test; set +a; \
+	$(MAKE) cloud-github-auth GCP_ENV=test GCP_PROJECT_ID="$${GCP_PROJECT_ID:-$(GCP_TEST_PROJECT)}"
+
+cloud-github-auth-prod:
+	@set -a; [ ! -f .env.prod ] || . ./.env.prod; set +a; \
+	$(MAKE) cloud-github-auth GCP_ENV=prod GCP_PROJECT_ID="$${GCP_PROJECT_ID:-$(GCP_PROD_PROJECT)}"
+
+cloud-start:
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-backend" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 1 --max 1 --quiet
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-web" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 1 --max 1 --quiet
+
+cloud-stop:
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-backend" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 0 --max 1 --quiet
+	@gcloud run services update "robot-fleet-$(GCP_ENV)-web" --region "$(GCP_REGION)" --project "$(GCP_PROJECT)" --min 0 --max 1 --quiet
+
+cloud-start-test:
+	$(MAKE) cloud-start GCP_ENV=test GCP_PROJECT="$(GCP_TEST_PROJECT)"
+
+cloud-stop-test:
+	$(MAKE) cloud-stop GCP_ENV=test GCP_PROJECT="$(GCP_TEST_PROJECT)"
+
+cloud-start-prod:
+	$(MAKE) cloud-start GCP_ENV=prod GCP_PROJECT="$(GCP_PROD_PROJECT)"
+
+cloud-stop-prod:
+	$(MAKE) cloud-stop GCP_ENV=prod GCP_PROJECT="$(GCP_PROD_PROJECT)"

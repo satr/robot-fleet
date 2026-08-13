@@ -11,12 +11,14 @@ use axum::{
     Json, Router,
 };
 use chrono::{DateTime, Duration, Utc};
+use futures_util::{SinkExt, StreamExt};
 use prometheus::{Encoder, TextEncoder};
 use robot_fleet_common::types::{
     CommandResponse, CreateCommandRequest, HealthResponse, Robot, RobotCommandMessage,
     RobotStreamMessage,
 };
 use serde_json::Value;
+use tokio_tungstenite::{connect_async, tungstenite::Message as TungsteniteMessage};
 use tower_http::cors::{Any, CorsLayer};
 use tracing::warn;
 use uuid::Uuid;
@@ -48,8 +50,55 @@ pub(crate) fn router(state: AppState) -> Router {
         )
         .route("/internal/alertmanager/webhook", post(alertmanager_webhook))
         .route("/metrics", get(metrics))
+        .route("/mqtt", get(mqtt_websocket))
+        .route("/", get(mqtt_websocket))
         .layer(cors)
         .with_state(state)
+}
+
+async fn mqtt_websocket(upgrade: WebSocketUpgrade) -> impl IntoResponse {
+    upgrade.on_upgrade(proxy_mqtt_websocket)
+}
+
+async fn proxy_mqtt_websocket(client: WebSocket) {
+    let Ok((broker, _)) = connect_async("ws://127.0.0.1:9001").await else {
+        return;
+    };
+    let (mut broker_sink, mut broker_stream) = broker.split();
+    let (mut client_sink, mut client_stream) = client.split();
+    let client_to_broker = async {
+        while let Some(Ok(message)) = client_stream.next().await {
+            let converted = match message {
+                Message::Binary(bytes) => TungsteniteMessage::Binary(bytes.to_vec()),
+                Message::Text(text) => TungsteniteMessage::Text(text.to_string()),
+                Message::Ping(bytes) => TungsteniteMessage::Ping(bytes.to_vec()),
+                Message::Pong(bytes) => TungsteniteMessage::Pong(bytes.to_vec()),
+                Message::Close(_) => break,
+            };
+            if broker_sink.send(converted).await.is_err() {
+                break;
+            }
+        }
+    };
+    let broker_to_client = async {
+        while let Some(Ok(message)) = broker_stream.next().await {
+            let converted = match message {
+                TungsteniteMessage::Binary(bytes) => Message::Binary(bytes.into()),
+                TungsteniteMessage::Text(text) => Message::Text(text.into()),
+                TungsteniteMessage::Ping(bytes) => Message::Ping(bytes.into()),
+                TungsteniteMessage::Pong(bytes) => Message::Pong(bytes.into()),
+                TungsteniteMessage::Close(_) => break,
+                TungsteniteMessage::Frame(_) => continue,
+            };
+            if client_sink.send(converted).await.is_err() {
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        _ = client_to_broker => {}
+        _ = broker_to_client => {}
+    }
 }
 
 async fn liveness(State(state): State<AppState>) -> Json<HealthResponse> {

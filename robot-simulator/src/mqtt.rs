@@ -4,13 +4,13 @@ use anyhow::anyhow;
 use chrono::Utc;
 use rand::Rng;
 use robot_fleet_common::{
-    mqtt::parse_mqtt_url,
+    mqtt::mqtt_options,
     types::{
         CommandResultMessage, RobotCommandMessage, RobotSensorEventMessage, StateMessage,
         TelemetryMessage,
     },
 };
-use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
+use rumqttc::{AsyncClient, Event, Incoming, QoS};
 use serde_json::json;
 use tokio::{
     sync::Mutex,
@@ -116,8 +116,7 @@ pub(crate) async fn run_robot(
 }
 
 fn connect_mqtt(config: &Config) -> anyhow::Result<(AsyncClient, rumqttc::EventLoop)> {
-    let (host, port) = parse_mqtt_url(&config.mqtt_url)?;
-    let mut options = MqttOptions::new(&config.mqtt_client_id, host, port);
+    let mut options = mqtt_options(&config.mqtt_url, &config.mqtt_client_id)?;
     options.set_keep_alive(Duration::from_secs(10));
     Ok(AsyncClient::new(options, 100))
 }

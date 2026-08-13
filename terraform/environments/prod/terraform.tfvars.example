@@ -1,0 +1,7 @@
+# Terraform variables are loaded from the repository's .env.prod file.
+# Copy the repository root's .env.prod.example to .env.prod, then source it
+# before running Terraform:
+#
+#   set -a
+#   . ../../../.env.prod
+#   set +a
