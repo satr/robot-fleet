@@ -8,8 +8,7 @@ region="${GCP_REGION:?GCP_REGION is required}"
 repository="${AR_REPOSITORY:?AR_REPOSITORY is required}"
 simulator_image="${SIMULATOR_IMAGE:?SIMULATOR_IMAGE is required}"
 mqtt_url="${SIMULATOR_MQTT_URL:?SIMULATOR_MQTT_URL is required}"
-mqtt_username="${MQTT_USERNAME:?MQTT_USERNAME is required}"
-mqtt_password="${MQTT_PASSWORD:?MQTT_PASSWORD is required}"
+use_existing_secrets="${SIMULATOR_USE_EXISTING_SECRETS:-false}"
 billing_account="${GCP_BILLING_ACCOUNT:-}"
 secret_prefix="robot-fleet-${env_name}"
 
@@ -57,17 +56,26 @@ gcloud services enable \
 
 simulator_project_number="$(gcloud projects describe "$project" --format='value(projectNumber)')"
 simulator_runtime_account="${simulator_project_number}-compute@developer.gserviceaccount.com"
-for secret in mqtt-username mqtt-password; do
-  gcloud secrets describe "${secret_prefix}-${secret}" --project="$project" >/dev/null 2>&1 ||
-    gcloud secrets create "${secret_prefix}-${secret}" \
-      --replication-policy=automatic --project="$project" --quiet
-done
-printf '%s' "$mqtt_username" |
-  gcloud secrets versions add "${secret_prefix}-mqtt-username" \
-    --data-file=- --project="$project" --quiet
-printf '%s' "$mqtt_password" |
-  gcloud secrets versions add "${secret_prefix}-mqtt-password" \
-    --data-file=- --project="$project" --quiet
+if [ "$use_existing_secrets" = true ]; then
+  for secret in mqtt-username mqtt-password; do
+    gcloud secrets describe "${secret_prefix}-${secret}" --project="$project" >/dev/null ||
+      { echo "Secret ${secret_prefix}-${secret} is required in Secret Manager" >&2; exit 1; }
+  done
+else
+  mqtt_username="${MQTT_USERNAME:?MQTT_USERNAME is required}"
+  mqtt_password="${MQTT_PASSWORD:?MQTT_PASSWORD is required}"
+  for secret in mqtt-username mqtt-password; do
+    gcloud secrets describe "${secret_prefix}-${secret}" --project="$project" >/dev/null 2>&1 ||
+      gcloud secrets create "${secret_prefix}-${secret}" \
+        --replication-policy=automatic --project="$project" --quiet
+  done
+  printf '%s' "$mqtt_username" |
+    gcloud secrets versions add "${secret_prefix}-mqtt-username" \
+      --data-file=- --project="$project" --quiet
+  printf '%s' "$mqtt_password" |
+    gcloud secrets versions add "${secret_prefix}-mqtt-password" \
+      --data-file=- --project="$project" --quiet
+fi
 for secret in mqtt-username mqtt-password; do
   gcloud secrets add-iam-policy-binding "${secret_prefix}-${secret}" \
     --project="$project" \

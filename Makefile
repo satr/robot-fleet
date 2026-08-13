@@ -33,6 +33,7 @@ POSTGRES_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/postgres:$(IMAGE_TA
 SIMULATOR_IMAGE ?= $(AR_HOST)/$(GCP_SIMULATOR_PROJECT)/$(SIMULATOR_AR_REPOSITORY)/simulator:$(IMAGE_TAG)
 
 .PHONY: help infra-up infra-down infra-logs db-migrate backend-run backend-stop-dev backend-test web-run web-stop-dev web-build web-check robot-run robot-dev robot1-run robot2-run robot3-run robots-run robot1-dev robot2-dev robot3-dev robots-dev robots-stop-dev stop-dev robot1-up robot2-up robot3-up robots-up robot1-down robot2-down robot3-down robots-down dev build test docker-prereqs docker-build docker-up docker-down docker-logs cloud-deploy cloud-deploy-test cloud-deploy-prod cloud-github-auth cloud-github-auth-test cloud-github-auth-prod cloud-start cloud-stop cloud-start-test cloud-stop-test cloud-start-prod cloud-stop-prod simulator-deploy simulator-deploy-test simulator-deploy-prod simulator-start simulator-stop simulator-start-test simulator-stop-test simulator-start-prod simulator-stop-prod simulator-github-auth simulator-github-auth-test simulator-github-auth-prod clean
+.PHONY: cloud-secrets cloud-secrets-test cloud-secrets-prod
 
 help:
 	@echo "Robot Fleet commands:"
@@ -63,6 +64,8 @@ help:
 	@echo "  make docker-logs    Follow all Docker logs"
 	@echo "  make cloud-deploy-test  Build and deploy test to GCP_TEST_PROJECT"
 	@echo "  make cloud-deploy-prod  Build and deploy prod to GCP_PROD_PROJECT"
+	@echo "  make cloud-secrets-test  Refresh test PostgreSQL and MQTT secrets from .env.test"
+	@echo "  make cloud-secrets-prod  Refresh prod PostgreSQL and MQTT secrets from .env.prod"
 	@echo "  make cloud-github-auth-test  Create test GitHub OIDC auth and set repository secrets"
 	@echo "  make cloud-github-auth-prod  Create prod GitHub OIDC auth and set repository secrets"
 	@echo "  make cloud-start GCP_ENV=test|prod  Restore one Cloud Run instance"
@@ -202,6 +205,7 @@ cloud-deploy:
 	WEB_IMAGE="$(WEB_IMAGE)" \
 	MQTT_IMAGE="$(MQTT_IMAGE)" \
 	POSTGRES_IMAGE="$(POSTGRES_IMAGE)" \
+	USE_EXISTING_SECRETS="$(USE_EXISTING_SECRETS)" \
 	IMAGE_TAG="$(IMAGE_TAG)" \
 		scripts/cloud-deploy.sh
 
@@ -218,6 +222,32 @@ cloud-deploy-prod:
 	project="$${GCP_PROJECT_ID:-$(GCP_PROD_PROJECT)}"; \
 	tag="$${IMAGE_TAG:-$(IMAGE_TAG)}"; \
 	$(MAKE) cloud-deploy GCP_ENV=prod GCP_PROJECT="$$project" IMAGE_TAG="$$tag" TF_VAR_image_tag="$$tag"
+
+cloud-secrets:
+	@set -eu; \
+	project="$(GCP_PROJECT)"; \
+	prefix="robot-fleet-$(GCP_ENV)"; \
+	test -n "$${POSTGRES_USERNAME:-}" || { echo "POSTGRES_USERNAME is required" >&2; exit 1; }; \
+	test -n "$${POSTGRES_PASSWORD:-}" || { echo "POSTGRES_PASSWORD is required" >&2; exit 1; }; \
+	test -n "$${MQTT_USERNAME:-}" || { echo "MQTT_USERNAME is required" >&2; exit 1; }; \
+	test -n "$${MQTT_PASSWORD:-}" || { echo "MQTT_PASSWORD is required" >&2; exit 1; }; \
+	for secret in postgres-username postgres-password mqtt-username mqtt-password; do \
+		if ! gcloud secrets describe "$$prefix-$$secret" --project="$$project" >/dev/null 2>&1; then \
+			gcloud secrets create "$$prefix-$$secret" --replication-policy=automatic --project="$$project" --quiet; \
+		fi; \
+	done; \
+	printf '%s' "$$POSTGRES_USERNAME" | gcloud secrets versions add "$$prefix-postgres-username" --project="$$project" --data-file=- --quiet; \
+	printf '%s' "$$POSTGRES_PASSWORD" | gcloud secrets versions add "$$prefix-postgres-password" --project="$$project" --data-file=- --quiet; \
+	printf '%s' "$$MQTT_USERNAME" | gcloud secrets versions add "$$prefix-mqtt-username" --project="$$project" --data-file=- --quiet; \
+	printf '%s' "$$MQTT_PASSWORD" | gcloud secrets versions add "$$prefix-mqtt-password" --project="$$project" --data-file=- --quiet
+
+cloud-secrets-test:
+	@set -a; [ ! -f .env.test ] || . ./.env.test; set +a; \
+	$(MAKE) cloud-secrets GCP_ENV=test GCP_PROJECT="$${GCP_PROJECT_ID:-$(GCP_TEST_PROJECT)}"
+
+cloud-secrets-prod:
+	@set -a; [ ! -f .env.prod ] || . ./.env.prod; set +a; \
+	$(MAKE) cloud-secrets GCP_ENV=prod GCP_PROJECT="$${GCP_PROJECT_ID:-$(GCP_PROD_PROJECT)}"
 
 cloud-github-auth:
 	@GCP_PROJECT_ID="$${GCP_PROJECT_ID:-$(GCP_PROJECT)}" \
@@ -267,6 +297,7 @@ simulator-deploy:
 	SIMULATOR_MQTT_URL="$(SIMULATOR_MQTT_URL)" \
 	MQTT_USERNAME="$(MQTT_USERNAME)" \
 	MQTT_PASSWORD="$(MQTT_PASSWORD)" \
+	SIMULATOR_USE_EXISTING_SECRETS="$(SIMULATOR_USE_EXISTING_SECRETS)" \
 		./scripts/simulator-deploy.sh
 
 simulator-deploy-test:
@@ -315,12 +346,13 @@ simulator-github-auth:
 	GCP_DEPLOY_SERVICE_ACCOUNT_ID="$${GCP_SIMULATOR_DEPLOY_SERVICE_ACCOUNT_ID:-github-simulator-deployer}" \
 	GITHUB_WIF_PROVIDER_SECRET=GCP_SIMULATOR_WORKLOAD_IDENTITY_PROVIDER \
 	GITHUB_DEPLOY_SERVICE_ACCOUNT_SECRET=GCP_SIMULATOR_DEPLOY_SERVICE_ACCOUNT \
+	GITHUB_PROJECT_VARIABLE="$(GITHUB_PROJECT_VARIABLE)" \
 		scripts/cloud-github-auth.sh
 
 simulator-github-auth-test:
 	@set -a; [ ! -f .env.test ] || . ./.env.test; set +a; \
-	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_TEST_PROJECT)"
+	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_TEST_PROJECT)" GITHUB_PROJECT_VARIABLE=GCP_SIMULATOR_TEST_PROJECT
 
 simulator-github-auth-prod:
 	@set -a; [ ! -f .env.prod ] || . ./.env.prod; set +a; \
-	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_PROD_PROJECT)"
+	$(MAKE) simulator-github-auth GCP_SIMULATOR_PROJECT="$(GCP_SIMULATOR_PROD_PROJECT)" GITHUB_PROJECT_VARIABLE=GCP_SIMULATOR_PROD_PROJECT

@@ -27,10 +27,6 @@ jobs:
       GCP_SIMULATOR_PROD_PROJECT: ${{ vars.GCP_SIMULATOR_PROD_PROJECT }}
       SIMULATOR_MQTT_URL_TEST: ${{ vars.SIMULATOR_MQTT_URL_TEST }}
       SIMULATOR_MQTT_URL_PROD: ${{ vars.SIMULATOR_MQTT_URL_PROD }}
-      MQTT_USERNAME_TEST: ${{ secrets.MQTT_USERNAME_TEST }}
-      MQTT_PASSWORD_TEST: ${{ secrets.MQTT_PASSWORD_TEST }}
-      MQTT_USERNAME_PROD: ${{ secrets.MQTT_USERNAME_PROD }}
-      MQTT_PASSWORD_PROD: ${{ secrets.MQTT_PASSWORD_PROD }}
       GCP_BILLING_ACCOUNT: ${{ secrets.GCP_BILLING_ACCOUNT }}
       IMAGE_TAG: run-${{ github.run_id }}-${{ github.run_attempt }}
 
@@ -73,28 +69,18 @@ jobs:
                 echo "Repository variable SIMULATOR_MQTT_URL_TEST is required" >&2
                 exit 1
               }
-              test -n "${MQTT_USERNAME_TEST}" -a -n "${MQTT_PASSWORD_TEST}" || {
-                echo "MQTT_USERNAME_TEST and MQTT_PASSWORD_TEST secrets are required" >&2
-                exit 1
-              }
               make simulator-deploy-test \
                 SIMULATOR_MQTT_URL="${SIMULATOR_MQTT_URL_TEST}" \
-                MQTT_USERNAME="${MQTT_USERNAME_TEST}" \
-                MQTT_PASSWORD="${MQTT_PASSWORD_TEST}"
+                SIMULATOR_USE_EXISTING_SECRETS=true
               ;;
             deploy-prod)
               test -n "${SIMULATOR_MQTT_URL_PROD}" || {
                 echo "Repository variable SIMULATOR_MQTT_URL_PROD is required" >&2
                 exit 1
               }
-              test -n "${MQTT_USERNAME_PROD}" -a -n "${MQTT_PASSWORD_PROD}" || {
-                echo "MQTT_USERNAME_PROD and MQTT_PASSWORD_PROD secrets are required" >&2
-                exit 1
-              }
               make simulator-deploy-prod \
                 SIMULATOR_MQTT_URL="${SIMULATOR_MQTT_URL_PROD}" \
-                MQTT_USERNAME="${MQTT_USERNAME_PROD}" \
-                MQTT_PASSWORD="${MQTT_PASSWORD_PROD}"
+                SIMULATOR_USE_EXISTING_SECRETS=true
               ;;
             start-test) make simulator-start-test ;;
             stop-test) make simulator-stop-test ;;

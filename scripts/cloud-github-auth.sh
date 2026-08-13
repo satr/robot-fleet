@@ -9,6 +9,7 @@ provider_id="${GCP_WIF_PROVIDER_ID:-github}"
 service_account_id="${GCP_DEPLOY_SERVICE_ACCOUNT_ID:-github-deployer}"
 provider_secret="${GITHUB_WIF_PROVIDER_SECRET:-GCP_WORKLOAD_IDENTITY_PROVIDER}"
 service_account_secret="${GITHUB_DEPLOY_SERVICE_ACCOUNT_SECRET:-GCP_DEPLOY_SERVICE_ACCOUNT}"
+project_variable="${GITHUB_PROJECT_VARIABLE:-}"
 
 gcloud services enable \
   cloudresourcemanager.googleapis.com \
@@ -95,4 +96,7 @@ set_github_secret() {
 
 set_github_secret "$provider_secret" "$provider"
 set_github_secret "$service_account_secret" "$service_account"
+if [ -n "$project_variable" ]; then
+  gh variable set "$project_variable" --repo "$repo" --body "$project"
+fi
 echo "Configured GitHub OIDC auth for $project in $repo"

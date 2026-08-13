@@ -10,10 +10,7 @@ backend_image="${BACKEND_IMAGE:?BACKEND_IMAGE is required}"
 web_image="${WEB_IMAGE:?WEB_IMAGE is required}"
 mqtt_image="${MQTT_IMAGE:?MQTT_IMAGE is required}"
 postgres_image="${POSTGRES_IMAGE:?POSTGRES_IMAGE is required}"
-postgres_username="${POSTGRES_USERNAME:?POSTGRES_USERNAME is required}"
-postgres_password="${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
-mqtt_username="${MQTT_USERNAME:?MQTT_USERNAME is required}"
-mqtt_password="${MQTT_PASSWORD:?MQTT_PASSWORD is required}"
+use_existing_secrets="${USE_EXISTING_SECRETS:-false}"
 image_tag="${IMAGE_TAG:?IMAGE_TAG is required}"
 billing_account="${GCP_BILLING_ACCOUNT:-}"
 state_bucket="$(awk -F '"' '/^[[:space:]]*bucket[[:space:]]*=/{print $2}' "terraform/${env_name}.backend")"
@@ -68,6 +65,19 @@ gcloud services enable \
   run.googleapis.com \
   vpcaccess.googleapis.com \
   --project "$project" --quiet
+
+if [ "$use_existing_secrets" = true ]; then
+  secret_prefix="robot-fleet-${env_name}"
+  postgres_username="$(gcloud secrets versions access latest --secret="${secret_prefix}-postgres-username" --project="$project")"
+  postgres_password="$(gcloud secrets versions access latest --secret="${secret_prefix}-postgres-password" --project="$project")"
+  mqtt_username="$(gcloud secrets versions access latest --secret="${secret_prefix}-mqtt-username" --project="$project")"
+  mqtt_password="$(gcloud secrets versions access latest --secret="${secret_prefix}-mqtt-password" --project="$project")"
+else
+  postgres_username="${POSTGRES_USERNAME:?POSTGRES_USERNAME is required}"
+  postgres_password="${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+  mqtt_username="${MQTT_USERNAME:?MQTT_USERNAME is required}"
+  mqtt_password="${MQTT_PASSWORD:?MQTT_PASSWORD is required}"
+fi
 
 gcloud storage buckets describe "gs://${state_bucket}" --project "$project" >/dev/null 2>&1 ||
   gcloud storage buckets create "gs://${state_bucket}" \

@@ -66,10 +66,10 @@ jobs:
 
           case "${{ inputs.target }}" in
             deploy-test)
-              make cloud-deploy-test
+              make cloud-deploy-test USE_EXISTING_SECRETS=true
               ;;
             deploy-prod)
-              make cloud-deploy-prod
+              make cloud-deploy-prod USE_EXISTING_SECRETS=true
               ;;
             start-test)
               make cloud-start-test

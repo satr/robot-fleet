@@ -54,6 +54,14 @@ they do not perform an interactive login. `GCP_BILLING_ACCOUNT` is required
 only when the target project must be created, but linking it for an existing
 project is also supported.
 
+The GitHub Actions cloud deployment reads PostgreSQL and MQTT credentials from
+the existing environment-specific Secret Manager secrets instead of requiring
+them as GitHub secrets. Local deployments continue to read these credentials
+from `.env.test` or `.env.prod`.
+
+To refresh those secrets from the local environment files without deploying,
+run `make cloud-secrets-test` or `make cloud-secrets-prod`.
+
 Production uses the separate project and command:
 
 ```sh
@@ -113,4 +121,6 @@ The `Robot simulator deployment` workflow uses separate repository variables
 `GCP_SIMULATOR_DEPLOY_SERVICE_ACCOUNT`. Create these credentials with
 `make simulator-github-auth-test` and
 `make simulator-github-auth-prod`; the simulator service account needs the
-same deployment roles in its simulator project.
+same deployment roles in its simulator project. MQTT usernames and passwords
+are read from the existing `robot-fleet-{test,prod}-mqtt-{username,password}`
+Secret Manager secrets in the simulator project.
