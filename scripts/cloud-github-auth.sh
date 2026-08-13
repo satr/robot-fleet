@@ -12,6 +12,7 @@ service_account_secret="${GITHUB_DEPLOY_SERVICE_ACCOUNT_SECRET:-GCP_DEPLOY_SERVI
 project_variable="${GITHUB_PROJECT_VARIABLE:-}"
 mqtt_url_variable="${GITHUB_MQTT_URL_VARIABLE:-}"
 mqtt_url="${SIMULATOR_MQTT_URL:-}"
+billing_account="${GCP_BILLING_ACCOUNT:-}"
 
 gcloud services enable \
   cloudresourcemanager.googleapis.com \
@@ -76,6 +77,13 @@ for role in \
     --role="$role" \
     --quiet >/dev/null
 done
+
+if [ -n "$billing_account" ]; then
+  gcloud billing accounts add-iam-policy-binding "$billing_account" \
+    --member="serviceAccount:${service_account}" \
+    --role=roles/billing.user \
+    --quiet >/dev/null
+fi
 
 provider="projects/${project_number}/locations/global/workloadIdentityPools/${pool_id}/providers/${provider_id}"
 set_github_secret() {
