@@ -20,7 +20,7 @@ GCP_BILLING_ACCOUNT ?=
 REPO ?= satr/robot-fleet
 AR_REPOSITORY ?= robot-fleet-$(GCP_ENV)-images
 AR_HOST ?= $(GCP_REGION)-docker.pkg.dev
-IMAGE_TAG ?= $(if $(TF_VAR_image_tag),$(TF_VAR_image_tag),latest)
+IMAGE_TAG ?= run-$(shell date -u +%Y%m%d%H%M%S)-$(shell uuidgen | cut -d- -f1)
 BACKEND_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/backend:$(IMAGE_TAG)
 WEB_IMAGE ?= $(AR_HOST)/$(GCP_PROJECT)/$(AR_REPOSITORY)/web:$(IMAGE_TAG)
 
@@ -243,15 +243,15 @@ cloud-deploy-test:
 	@set -eu; \
 	if [ -f .env.test ]; then set -a; . ./.env.test; set +a; fi; \
 	project="$${GCP_PROJECT_ID:-$(GCP_TEST_PROJECT)}"; \
-	tag="$${TF_VAR_image_tag:-$(IMAGE_TAG)}"; \
-	$(MAKE) cloud-deploy GCP_ENV=test GCP_PROJECT="$$project" IMAGE_TAG="$$tag"
+	tag="$${IMAGE_TAG:-$(IMAGE_TAG)}"; \
+	$(MAKE) cloud-deploy GCP_ENV=test GCP_PROJECT="$$project" IMAGE_TAG="$$tag" TF_VAR_image_tag="$$tag"
 
 cloud-deploy-prod:
 	@set -eu; \
 	if [ -f .env.prod ]; then set -a; . ./.env.prod; set +a; fi; \
 	project="$${GCP_PROJECT_ID:-$(GCP_PROD_PROJECT)}"; \
-	tag="$${TF_VAR_image_tag:-$(IMAGE_TAG)}"; \
-	$(MAKE) cloud-deploy GCP_ENV=prod GCP_PROJECT="$$project" IMAGE_TAG="$$tag"
+	tag="$${IMAGE_TAG:-$(IMAGE_TAG)}"; \
+	$(MAKE) cloud-deploy GCP_ENV=prod GCP_PROJECT="$$project" IMAGE_TAG="$$tag" TF_VAR_image_tag="$$tag"
 
 cloud-github-auth:
 	@set -eu; \

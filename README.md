@@ -61,8 +61,10 @@ that runs PostgreSQL and Mosquitto in the same ephemeral instance. The backend
 serves HTTP and proxies public MQTT-over-WebSockets at its root endpoint, so
 remote simulators use `MQTT_URL=wss://<backend-service-url>`. `make
 cloud-deploy-test` and `make cloud-deploy-prod` use separate projects; see
-`terraform/README.md`. This mode intentionally has no authentication and loses
-database state on instance replacement or scale-to-zero.
+[`terraform/README.md`](terraform/README.md) and its
+[deployment prerequisites](terraform/PREREQUISITES.md). This mode intentionally
+has no authentication and loses database state on instance replacement or
+scale-to-zero.
 
 ## Command lifecycle
 
