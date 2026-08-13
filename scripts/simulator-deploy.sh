@@ -21,7 +21,14 @@ if ! gcloud projects describe "$project" --format='value(projectId)' >/dev/null 
 fi
 
 if [ -n "$billing_account" ]; then
-  gcloud billing projects link "$project" --billing-account="$billing_account" --quiet
+  current_billing_account="$(
+    gcloud billing projects describe "$project" \
+      --format='value(billingAccountName)' 2>/dev/null || true
+  )"
+  desired_billing_account="billingAccounts/${billing_account}"
+  if [ "$current_billing_account" != "$desired_billing_account" ]; then
+    gcloud billing projects link "$project" --billing-account="$billing_account" --quiet
+  fi
 fi
 
 deployer_account="$(gcloud config get-value account 2>/dev/null)"

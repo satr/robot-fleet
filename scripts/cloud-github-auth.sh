@@ -66,6 +66,7 @@ gcloud iam service-accounts add-iam-policy-binding "$service_account" \
 for role in \
   roles/cloudbuild.builds.editor \
   roles/artifactregistry.admin \
+  roles/billing.projectManager \
   roles/run.admin \
   roles/resourcemanager.projectIamAdmin \
   roles/secretmanager.admin \
